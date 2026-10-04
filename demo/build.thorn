@@ -1,0 +1,22 @@
+# build.thorn - a small multi-file C project.
+#
+# The bootstrap recipe (see verify.sh and README.md) compiles this
+# spec with `pith build --plugin`, extracts the plugin object, and
+# links it against thorn_engine.c (vendored next to this file) and
+# pith's runtime, producing a per-project thorn binary. Running that
+# binary emits build.ninja and a Makefile right here.
+
+import "thorn_engine.c"
+
+fn thorn_configure()
+    thorn_engine.project("demo")
+
+    thorn_engine.add_target("demo_app", thorn_engine.exe)
+    thorn_engine.add_source("demo_app", "main.c")
+    thorn_engine.add_source("demo_app", "util.c")
+    thorn_engine.add_include("demo_app", ".")
+    thorn_engine.add_cflag("demo_app", "-O2")
+    thorn_engine.add_cflag("demo_app", "-Wall")
+    thorn_engine.add_cflag("demo_app", "-Wextra")
+    thorn_engine.add_ldflag("demo_app", "-lm")
+end

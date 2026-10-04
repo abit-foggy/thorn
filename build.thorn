@@ -1,0 +1,44 @@
+# build.thorn - thorn's own build specification.
+#
+# thorn dogfoods itself: the binary built from this spec (bootstrap,
+# then `./thorn --ninja && samu`) rebuilds thorn's engine objects and
+# relinks a stage 2 binary against the plugin object produced by the
+# bootstrap Makefile (build_thorn.o) and pith's runtime archive.
+#
+# The stage 1 bootstrap compiles THIS file with `pith build --plugin`,
+# extracts the plugin object, and links it against thorn_engine.c
+# (see the Makefile). The -D cflags below are the author-aware symbol
+# renames pith applies to every imported C unit; stage 2 compiles the
+# engine with them through the generated ninja, exactly as the
+# bootstrap does.
+
+import "thorn_engine.c"
+
+fn thorn_configure()
+    thorn_engine.project("thorn")
+
+    thorn_engine.add_target("thorn", thorn_engine.exe)
+    thorn_engine.add_source("thorn", "thorn_engine.c")
+    thorn_engine.add_source("thorn", "thorn_decompile.c")
+    thorn_engine.add_source("thorn", "build_thorn.o")
+    thorn_engine.add_cflag("thorn", "-std=c99")
+    thorn_engine.add_cflag("thorn", "-O2")
+    thorn_engine.add_cflag("thorn", "-Wall")
+    thorn_engine.add_cflag("thorn", "-Wextra")
+    thorn_engine.add_cflag("thorn", "-Wno-unused-parameter")
+    thorn_engine.add_cflag("thorn", "-D_DEFAULT_SOURCE")
+    thorn_engine.add_cflag("thorn", "-Dproject=c_thorn_engine_project")
+    thorn_engine.add_cflag("thorn", "-Dexe=c_thorn_engine_exe")
+    thorn_engine.add_cflag("thorn", "-Dstatic_lib=c_thorn_engine_static_lib")
+    thorn_engine.add_cflag("thorn", "-Dshared_lib=c_thorn_engine_shared_lib")
+    thorn_engine.add_cflag("thorn", "-Dadd_target=c_thorn_engine_add_target")
+    thorn_engine.add_cflag("thorn", "-Dadd_source=c_thorn_engine_add_source")
+    thorn_engine.add_cflag("thorn", "-Dadd_cflag=c_thorn_engine_add_cflag")
+    thorn_engine.add_cflag("thorn", "-Dadd_ldflag=c_thorn_engine_add_ldflag")
+    thorn_engine.add_cflag("thorn", "-Dadd_include=c_thorn_engine_add_include")
+    thorn_engine.add_cflag("thorn", "-Dadd_order_dep=c_thorn_engine_add_order_dep")
+    thorn_engine.add_cflag("thorn", "-Dpkg_config=c_thorn_engine_pkg_config")
+    thorn_engine.add_cflag("thorn", "-DTHORN_CONFIGURE_SYMBOL=c_thorn_build_thorn_configure")
+    thorn_engine.add_include("thorn", "../pith/include")
+    thorn_engine.add_ldflag("thorn", "../pith/runtime/libruntime.a")
+end

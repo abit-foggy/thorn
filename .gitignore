@@ -1,0 +1,27 @@
+# build artifacts
+thorn
+thorn_engine.o
+thorn_decompile.o
+build_thorn.o
+build_thorn.ppkg
+build.ninja
+thorn__*.o
+.ninja_deps
+.ninja_log
+
+# demo project
+demo/demo-thorn
+demo/thorn_engine.c
+demo/thorn_engine.h
+demo/thorn_decompile.c
+demo/build.ninja
+demo/Makefile
+demo/*.o
+demo/*.d
+demo/demo_app
+demo/build_thorn.ppkg
+demo/.ninja_deps
+demo/.ninja_log
+demo/build.decompiled.thorn
+demo/build.from_make.thorn
+demo/rt/
