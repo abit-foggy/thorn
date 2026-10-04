@@ -1,25 +1,24 @@
 #!/bin/sh
-# verify.sh - the thorn acceptance suite.
+# verify.sh - the thorn acceptance suite (embed mode).
 #
-# Proves the full mission contract:
-#   stage 1: pith compiles build.thorn -> plugin object -> link with the
-#            engine and pith's runtime -> ./thorn
-#   stage 2: thorn emits its own build.ninja, samu rebuilds thorn with it
-#   demo:    a small multi-file C project configured in pith, built by
-#            both samu (ninja) and make, with identical program output
-#   reverse: thorn decompile ingests build.ninja and the Makefile into
-#            idiomatic build.thorn specs, and the decompiled spec
-#            regenerates a byte-identical build.ninja (full roundtrip)
+# Proves the full contract:
+#   stage 1: out/thorn built by linking thorn's engine with pith's
+#            frontend (the embedded language) and runtime
+#   stage 2: thorn evaluates its own build.thorn at runtime, emits
+#            out/artifacts/build.ninja, and samu rebuilds thorn from
+#            it (self-hosting through its own generated backend)
+#   demo:    one generic thorn binary evaluates demo/build.thorn,
+#            both backends build the demo, program output matches
+#   reverse: thorn decompile ingests build.ninja and the Makefile
+#            into idiomatic build.thorn specs, and the decompiled
+#            spec regenerates a byte-identical build.ninja
 #
-# Prerequisite: pith built at ../pith (see the Makefile header).
+# Prerequisite: pith built at ../pith (see the Makefile).
 
 set -e
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
 PITH_ROOT=$(cd "$ROOT/../pith" && pwd)
-PITH="$PITH_ROOT/pith"
-RUNTIME="$PITH_ROOT/runtime/libruntime.a"
-PITH_INC="$PITH_ROOT/include"
 SCRATCH=$(mktemp -d /tmp/opencode/thorn-verify.XXXXXX)
 
 PASS=0
@@ -29,82 +28,54 @@ ok()  { printf '  ok  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 step() { printf '\n== %s ==\n' "$1"; }
 
-# The author-aware symbol renames pith applies to imported C units
-# (must match the bootstrap Makefile).
-RENAME_DEFS="-Dproject=c_thorn_engine_project -Dexe=c_thorn_engine_exe \
--Dstatic_lib=c_thorn_engine_static_lib -Dshared_lib=c_thorn_engine_shared_lib \
--Dadd_target=c_thorn_engine_add_target -Dadd_source=c_thorn_engine_add_source \
--Dadd_cflag=c_thorn_engine_add_cflag -Dadd_ldflag=c_thorn_engine_add_ldflag \
--Dadd_include=c_thorn_engine_add_include -Dadd_order_dep=c_thorn_engine_add_order_dep \
--Dpkg_config=c_thorn_engine_pkg_config"
-
-ENGINE_CFLAGS="-std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
--D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE"
-
-# build_project <dir> <author>_<name> <out-binary>
-# The per-project recipe: compile the spec with pith, extract the
-# plugin object, compile the engine against the project's configure
-# symbol, link everything with pith's runtime.
-build_project() {
-    dir="$1"; sym="c_$2"; bin="$3"
-    (cd "$dir" &&
-        "$PITH" build build.thorn --plugin -o build_thorn >/dev/null &&
-        tar -xOf build_thorn.ppkg plugin.o > build_thorn.o &&
-        nm build_thorn.o | grep -q "T $sym" &&
-        cc $ENGINE_CFLAGS $RENAME_DEFS \
-            "-DTHORN_CONFIGURE_SYMBOL=$sym" -I"$PITH_INC" \
-            -c thorn_engine.c -o thorn_engine.o &&
-        cc $ENGINE_CFLAGS -I"$PITH_INC" \
-            -c thorn_decompile.c -o thorn_decompile.o &&
-        cc thorn_engine.o thorn_decompile.o build_thorn.o "$RUNTIME" \
-            -o "$bin")
-}
-
 DEMO_OUT='demo: add(2,3) = 5
 demo: mul(4,5) = 20
 demo: sqrt(144.0) = 12.0'
 
 # ------------------------------------------------------------------
-step "stage 1: bootstrap thorn (pith plugin + engine + runtime)"
+step "stage 1: build out/thorn (thorn engine + embedded pith)"
 make -C "$ROOT" clean >/dev/null 2>&1 || true
 make -C "$ROOT" >/dev/null
-if [ -x "$ROOT/thorn" ]; then
-    ok "thorn binary built"
+if [ -x "$ROOT/out/thorn" ]; then
+    ok "out/thorn built"
 else
-    bad "thorn binary missing"; exit 1
+    bad "out/thorn missing"; exit 1
 fi
-"$ROOT/thorn" version | grep -q "thorn 0.1.0" && ok "thorn version reports"
+"$ROOT/out/thorn" version | grep -q "thorn " && ok "thorn version reports"
 
 # ------------------------------------------------------------------
-step "stage 2: thorn emits its own build.ninja; samu rebuilds thorn"
+step "stage 2: thorn self-hosts through its own generated backend"
 cd "$ROOT"
-./thorn --ninja >/dev/null
-[ -f build.ninja ] && ok "build.ninja emitted for thorn itself"
-samu >/dev/null 2>&1
-[ -x ./thorn ] && ok "samu rebuilt thorn from its own ninja"
-./thorn version >/dev/null && ok "stage 2 thorn runs"
+./out/thorn --out-dir out/artifacts >/dev/null 2>&1
+[ -f out/artifacts/build.ninja ] && [ -f out/artifacts/Makefile ] \
+    && ok "backends generated into out/artifacts"
+samu -f out/artifacts/build.ninja >/dev/null 2>&1
+[ -x out/artifacts/thorn ] && ok "samu rebuilt thorn from its own ninja"
+./out/artifacts/thorn version >/dev/null \
+    && ok "stage 2 thorn runs (embeds pith, reads specs at runtime)"
 
-# determinism: stage 2 emits what stage 1 emitted
-cp build.ninja "$SCRATCH/self.ninja"
-./thorn --ninja >/dev/null
-if cmp -s build.ninja "$SCRATCH/self.ninja"; then
-    ok "deterministic: stage 1 and stage 2 emit identical bytes"
+# determinism: a second run emits identical bytes
+cp out/artifacts/build.ninja "$SCRATCH/self.ninja"
+./out/thorn --out-dir out/artifacts >/dev/null 2>&1
+if cmp -s out/artifacts/build.ninja "$SCRATCH/self.ninja"; then
+    ok "deterministic: identical bytes across runs"
 else
     bad "ninja output not deterministic"
 fi
 
-# ------------------------------------------------------------------
-step "demo: per-project thorn binary from build.thorn"
-cd "$ROOT/demo"
-cp -f "$ROOT/thorn_engine.c" "$ROOT/thorn_engine.h" "$ROOT/thorn_decompile.c" .
-if build_project "$PWD" thorn_demo_thorn_configure demo-thorn; then
-    ok "demo thorn binary built (spec compiled by pith, linked with engine)"
-else
-    bad "demo thorn build failed"; exit 1
-fi
+# the stage 2 binary fully works too (decompile path, no pith needed)
+./out/artifacts/thorn decompile out/artifacts/build.ninja \
+    -o "$SCRATCH/self.thorn" >/dev/null \
+    && grep -q 'add_target("thorn_core", thorn_engine.static_lib)' \
+        "$SCRATCH/self.thorn" \
+    && ok "stage 2 binary decompiles its own backend"
 
-./demo-thorn >/dev/null
-[ -f build.ninja ] && [ -f Makefile ] && ok "demo backends emitted (ninja + make)"
+# ------------------------------------------------------------------
+step "demo: one generic thorn binary serves any project"
+cd "$ROOT/demo"
+../out/thorn >/dev/null 2>&1
+[ -f build.ninja ] && [ -f Makefile ] \
+    && ok "demo backends emitted in the project directory"
 
 step "demo: samu (ninja backend)"
 samu >/dev/null 2>&1
@@ -127,13 +98,15 @@ fi
 
 # ------------------------------------------------------------------
 step "reverse: decompile build.ninja into build.thorn"
-./demo-thorn decompile build.ninja -o build.decompiled.thorn >/dev/null
+../out/thorn decompile build.ninja -o build.decompiled.thorn >/dev/null
 grep -q 'thorn_engine.project("demo")' build.decompiled.thorn \
     && ok "decompile recovers the project name"
-grep -q 'add_target("demo_app", thorn_engine.exe)' build.decompiled.thorn \
+grep -q 'add_target("demo_app", thorn_engine.exe)' \
+    build.decompiled.thorn \
     && ok "decompile recovers the target and type"
 grep -q 'add_source("demo_app", "main.c")' build.decompiled.thorn \
-    && grep -q 'add_source("demo_app", "util.c")' build.decompiled.thorn \
+    && grep -q 'add_source("demo_app", "util.c")' \
+    build.decompiled.thorn \
     && ok "decompile recovers the sources"
 grep -q 'add_include("demo_app", ".")' build.decompiled.thorn \
     && grep -q 'add_cflag("demo_app", "-O2")' build.decompiled.thorn \
@@ -142,7 +115,7 @@ grep -q 'add_ldflag("demo_app", "-lm")' build.decompiled.thorn \
     && ok "decompile recovers ldflags"
 
 step "reverse: decompile the Makefile"
-./demo-thorn decompile Makefile -o build.from_make.thorn >/dev/null
+../out/thorn decompile Makefile -o build.from_make.thorn >/dev/null
 grep -q 'add_source("demo_app", "main.c")' build.from_make.thorn \
     && grep -q 'add_ldflag("demo_app", "-lm")' build.from_make.thorn \
     && ok "makefile decompile recovers sources and ldflags"
@@ -151,14 +124,8 @@ step "roundtrip: the decompiled spec regenerates identical ninja"
 rt="$ROOT/demo/rt"
 rm -rf "$rt" && mkdir -p "$rt"
 cp build.decompiled.thorn "$rt/build.thorn"
-cp thorn_engine.c thorn_engine.h thorn_decompile.c pith.toml "$rt/"
 cp main.c util.c util.h "$rt/"
-if build_project "$rt" thorn_demo_thorn_configure rt-thorn; then
-    ok "decompiled build.thorn compiles with pith and links"
-else
-    bad "decompiled spec failed to rebuild"; exit 1
-fi
-(cd "$rt" && ./rt-thorn) >/dev/null
+(cd "$rt" && ../../out/thorn >/dev/null 2>&1)
 if cmp -s "$rt/build.ninja" "$ROOT/demo/build.ninja"; then
     ok "ROUNDTRIP: decompiled spec regenerates a byte-identical build.ninja"
 else

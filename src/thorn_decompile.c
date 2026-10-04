@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "thorn_engine.h"
+#include "include/thorn_engine.h"
 
 /* ------------------------------------------------------------------ */
 /* Notes & diagnostics                                               */
@@ -189,6 +189,34 @@ static char *swap_ext_dup(const char *path, char newext)
     if (l >= 2 && s[l - 2] == '.')
         s[l - 1] = newext;
     return s;
+}
+
+/* Strip a leading directory prefix ("" = nothing to do). Used to
+ * clean target names from backends thorn generated into --out-dir:
+ * "out/artifacts/thorn" decompiles to the target "thorn". */
+static const char *strip_pfx(const char *s, const char *pfx)
+{
+    if (pfx && *pfx) {
+        size_t l = strlen(pfx);
+        if (strncmp(s, pfx, l) == 0)
+            return s + l;
+    }
+    return s;
+}
+
+/* The clean target name behind an emitted artifact: prefix stripped,
+ * conventional library extensions (.a, .so) removed. */
+static const char *clean_target(const char *raw, const char *pfx,
+                                char *buf, size_t n)
+{
+    const char *s = strip_pfx(raw, pfx);
+    snprintf(buf, n, "%s", s);
+    size_t l = strlen(buf);
+    if (l > 3 && ends_with(buf, ".so"))
+        buf[l - 3] = '\0';
+    else if (l > 2 && ends_with(buf, ".a"))
+        buf[l - 2] = '\0';
+    return buf;
 }
 
 /* ------------------------------------------------------------------ */
@@ -587,8 +615,8 @@ static void parse_ninja(char *mem, NDoc *doc, char ***notes, size_t *nnotes)
     }
 }
 
-static void map_ninja(const NDoc *doc, Graph *g, char ***notes,
-                      size_t *nnotes)
+static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
+                      char ***notes, size_t *nnotes)
 {
     if (doc->proj[0])
         snprintf(g->proj, sizeof(g->proj), "%s", doc->proj);
@@ -644,7 +672,9 @@ static void map_ninja(const NDoc *doc, Graph *g, char ***notes,
         NEdge *e = &doc->edges[i];
         if (e->nout == 0)
             continue;
-        const char *name = e->outs[0];
+        char nbuf[512];
+        const char *name = clean_target(e->outs[0], pfx, nbuf,
+                                        sizeof(nbuf));
         int type = c == RC_AR ? THORN_STATIC_LIB
                 : c == RC_SHARED ? THORN_SHARED_LIB
                                  : THORN_EXE;
@@ -1062,8 +1092,8 @@ static ObjInfo *objmap_find(ObjInfo *m, size_t n, const char *obj)
     return NULL;
 }
 
-static void map_make(const MDoc *doc, Graph *g, char ***notes,
-                     size_t *nnotes)
+static void map_make(const MDoc *doc, Graph *g, const char *pfx,
+                     char ***notes, size_t *nnotes)
 {
     const char *pv = mvar_get(&doc->vars, "thorn_project");
     if (pv)
@@ -1186,7 +1216,9 @@ static void map_make(const MDoc *doc, Graph *g, char ***notes,
         MRule *r = &doc->rules[i];
         if (r->ntgt == 0)
             continue;
-        const char *tgt = r->targets[0];
+        char nbuf[512];
+        const char *tgt = clean_target(r->targets[0], pfx, nbuf,
+                                       sizeof(nbuf));
         if (strcmp(tgt, ".PHONY") == 0 || strcmp(tgt, "all") == 0)
             continue;
         if (strcmp(tgt, "clean") == 0) {
@@ -1244,7 +1276,7 @@ static void map_make(const MDoc *doc, Graph *g, char ***notes,
                         strlist_push(&t->order_deps,
                                      oi->ords.items[x]);
                 } else if (has_pattern) {
-                    char *src = swap_ext_dup(pr, 'c');
+                    char *src = swap_ext_dup(strip_pfx(pr, pfx), 'c');
                     strlist_push(&t->sources, src);
                     if (!pat_attached) {
                         pat_attached = 1;
@@ -1392,17 +1424,21 @@ int thorn_decompile_file(const char *path, Graph *g, char ***notes,
 
     int rc = 1;
     if (sniff_is_ninja(mem)) {
+        char pfx[2048];
+        thorn_dir_prefix(path, pfx, sizeof(pfx));
         NDoc doc;
         memset(&doc, 0, sizeof(doc));
         parse_ninja(mem, &doc, notes, nnotes);
-        map_ninja(&doc, g, notes, nnotes);
+        map_ninja(&doc, g, pfx, notes, nnotes);
         ninja_doc_free(&doc);
         rc = g->count == 0;
     } else {
+        char pfx[2048];
+        thorn_dir_prefix(path, pfx, sizeof(pfx));
         MDoc doc;
         memset(&doc, 0, sizeof(doc));
         parse_make(mem, &doc, notes, nnotes);
-        map_make(&doc, g, notes, nnotes);
+        map_make(&doc, g, pfx, notes, nnotes);
         mdoc_free(&doc);
         rc = g->count == 0;
     }

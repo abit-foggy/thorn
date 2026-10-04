@@ -1,37 +1,38 @@
-# thorn bootstrap Makefile - stage 1.
+# thorn bootstrap Makefile - builds out/thorn.
 #
-# Prerequisites (see README.md):
-#   - the pith toolchain built in ../pith: run `make` there
-#     (on glibc >= 2.43, use
-#      `make CFLAGS="-std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -Iinclude -D_DEFAULT_SOURCE"`)
-#   - a POSIX cc, tar, and nm
+# thorn embeds pith (the Lua-in-a-game-engine model): the binary
+# carries pith's frontend and evaluates build.thorn at runtime, so
+# ONE thorn serves every project. Prerequisites:
 #
-# Stage 1 (this Makefile):
-#   1. pith compiles build.thorn --plugin -> build_thorn.ppkg
-#   2. tar extracts plugin.o -> build_thorn.o
-#      (exports c_thorn_build_thorn_configure, the zero-param Pith
-#      entry point; the name comes from pith.toml [project])
-#   3. cc compiles the engine with the same -D symbol renames pith
-#      applies to imported C units
-#   4. cc links engine + decompiler + plugin object + pith's
-#      runtime/libruntime.a -> ./thorn
+#   - the pith toolchain built in ../pith (run `make` there; on
+#     glibc >= 2.43 see the -D_DEFAULT_SOURCE note in README.md)
+#   - a POSIX cc
 #
-# Stage 2 (self-hosting): ./thorn --ninja && samu rebuilds thorn from
-# build.thorn's own generated build.ninja.
+# Layout: sources in src/, headers in src/include/, objects and
+# generated backends in out/artifacts/, the binary in out/.
+#
+# src/thorn_engine.c compiles under the -D<stem>=c_thorn_engine_<stem>
+# renames (the same author-aware mangling pith applies to imported C
+# units) so it doubles as the temp-executable fallback link object:
+# when a hardened kernel blocks in-memory execution, pith links this
+# object into the child process, whose script calls then resolve.
 
 CC = cc
 PITH_ROOT = ../pith
-PITH = $(PITH_ROOT)/pith
-RUNTIME = $(PITH_ROOT)/runtime/libruntime.a
 PITH_INC = $(PITH_ROOT)/include
 
-# pith.toml [project] author="thorn" name="build" fixes the exported
-# entry point symbol: c_<author>_<name>_thorn_configure
-CONFIGURE_SYM = c_thorn_build_thorn_configure
+OUT = out
+ART = $(OUT)/artifacts
 
-# The author-aware renames pith applies to every imported C unit; the
-# engine is compiled with the identical defines so its symbols match
-# the call sites the compiled build.thorn emits.
+# the embedded language: pith's frontend objects and libraries
+PITH_FRONT = $(PITH_ROOT)/src/lexer.o $(PITH_ROOT)/src/parser.o \
+	$(PITH_ROOT)/src/gen_qbe.o $(PITH_ROOT)/src/engine_proxy.o \
+	$(PITH_ROOT)/src/pith_embed.o $(PITH_ROOT)/src/tar.o \
+	$(PITH_ROOT)/src/config.o $(PITH_ROOT)/src/cffi.o
+PITH_LIBS = $(PITH_ROOT)/vendor/qbe/libqbe.a \
+	$(PITH_ROOT)/vendor/tcc/libtcc.a -ldl \
+	$(PITH_ROOT)/runtime/libruntime.a
+
 RENAME_DEFS = \
 	-Dproject=c_thorn_engine_project \
 	-Dexe=c_thorn_engine_exe \
@@ -43,33 +44,49 @@ RENAME_DEFS = \
 	-Dadd_ldflag=c_thorn_engine_add_ldflag \
 	-Dadd_include=c_thorn_engine_add_include \
 	-Dadd_order_dep=c_thorn_engine_add_order_dep \
-	-Dpkg_config=c_thorn_engine_pkg_config
+	-Dpkg_config=c_thorn_engine_pkg_config \
+	-Demit=c_thorn_engine_emit
 
 CFLAGS = -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
 	-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 
-all: thorn
+all: $(OUT)/thorn
 
-build_thorn.o: build.thorn thorn_engine.c thorn_engine.h pith.toml
-	$(PITH) build build.thorn --plugin -o build_thorn
-	tar -xOf build_thorn.ppkg plugin.o > $@
-	@nm $@ | grep -q " T $(CONFIGURE_SYM)" || { \
-		echo "thorn: $(CONFIGURE_SYM) is missing from the plugin object"; \
-		echo "thorn: check pith.toml [project] author/name (must be thorn/build)"; \
+pith-check:
+	@test -x $(PITH_ROOT)/pith || { \
+		echo "thorn: $(PITH_ROOT)/pith is missing - run 'make' there first"; \
+		exit 1; }
+	@test -f $(PITH_ROOT)/runtime/libruntime.a || { \
+		echo "thorn: $(PITH_ROOT)/runtime/libruntime.a is missing"; \
 		exit 1; }
 
-thorn_engine.o: thorn_engine.c thorn_engine.h
-	$(CC) $(CFLAGS) $(RENAME_DEFS) \
-		-DTHORN_CONFIGURE_SYMBOL=$(CONFIGURE_SYM) \
-		-I$(PITH_INC) -c thorn_engine.c -o $@
+$(ART)/thorn_engine.o: src/thorn_engine.c src/include/thorn_engine.h pith-check
+	mkdir -p $(ART)
+	$(CC) $(CFLAGS) $(RENAME_DEFS) -I$(PITH_INC) -c src/thorn_engine.c -o $@
 
-thorn_decompile.o: thorn_decompile.c thorn_engine.h
-	$(CC) $(CFLAGS) -I$(PITH_INC) -c thorn_decompile.c -o $@
+$(ART)/thorn_decompile.o: src/thorn_decompile.c src/include/thorn_engine.h pith-check
+	mkdir -p $(ART)
+	$(CC) $(CFLAGS) -I$(PITH_INC) -c src/thorn_decompile.c -o $@
 
-thorn: thorn_engine.o thorn_decompile.o build_thorn.o $(RUNTIME)
-	$(CC) thorn_engine.o thorn_decompile.o build_thorn.o $(RUNTIME) -o $@
+$(ART)/thorn_main.o: src/thorn_main.c src/include/thorn_engine.h pith-check
+	mkdir -p $(ART)
+	$(CC) $(CFLAGS) -I$(PITH_INC) -c src/thorn_main.c -o $@
+
+$(OUT)/thorn: $(ART)/thorn_main.o $(ART)/thorn_engine.o \
+	$(ART)/thorn_decompile.o $(PITH_FRONT) $(PITH_LIBS)
+	mkdir -p $(OUT)
+	RT=$$(cd $(PITH_ROOT) && pwd)/runtime/libruntime.a; \
+	$(CC) $(ART)/thorn_main.o $(ART)/thorn_engine.o \
+		$(ART)/thorn_decompile.o $(PITH_FRONT) $(PITH_LIBS) \
+		-DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -o $@
+
+# stage 2: thorn generates its own backends and rebuilds itself
+selfhost: $(OUT)/thorn
+	$(OUT)/thorn --out-dir $(ART)
+	samu -f $(ART)/build.ninja
+	$(ART)/thorn version
 
 clean:
-	rm -f thorn thorn_engine.o thorn_decompile.o build_thorn.o \
-		build_thorn.ppkg build.ninja thorn__*.o
-	rm -rf thorn
+	rm -rf $(OUT)
+
+.PHONY: all selfhost clean pith-check

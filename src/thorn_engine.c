@@ -1,64 +1,62 @@
 /*
- * thorn_engine.c - the C99 host engine for thorn, a native meta-build
- * generator that dogfoods The Pith Programming Language.
+ * thorn_engine.c - the C99 host engine for thorn, a lean meta-build
+ * generator that embeds The Pith Programming Language.
  *
  * A thorn is the sharp spine on the stem of a plant; it grows on the
- * pith. This tool is the sharp point of the pith toolchain: lean,
- * minimal, zero-bloat, in the QBE spirit.
+ * pith. This tool is the sharp point of the pith toolchain: minimal,
+ * zero-bloat, deterministic, in the QBE spirit.
  *
- * Pipeline (see the bootstrap Makefile for the exact commands):
+ * Architecture (the Lua-in-a-game-engine model):
  *
- *   build.thorn --(pith build --plugin)--> build_thorn.o
- *       exports c_thorn_<author>_<name>_thorn_configure (zero params,
- *       64-bit return), calls back into this engine through the
- *       c_thorn_engine_* C ABI
- *   thorn_engine.c --(cc, -D<stem>=c_thorn_engine_<stem> renames)--> thorn_engine.o
- *   thorn_decompile.c --> thorn_decompile.o
- *   $CC links engine + decompiler + plugin object + pith's
- *   runtime/libruntime.a --> the project's thorn binary
+ *   thorn embeds pith's frontend (libtcc/libqbe/libruntime joined at
+ *   link time, see the bootstrap Makefile). At runtime thorn reads
+ *   build.thorn, registers its build API as a host namespace
+ *   (thorn_engine.*) through pith's embed ABI, and evaluates the
+ *   spec. The script configures the graph by calling the API
+ *   directly through the C ABI; thorn appends an emission epilogue
+ *   that calls thorn_engine.emit(), which writes a deterministic
+ *   build.ninja (samurai/ninja) and a portable Makefile.
  *
- * thorn's main() parses the CLI, invokes the compiled-in Pith entry
- * point (thorn_configure()), collects the build graph, and emits a
- * deterministic build.ninja (samurai/ninja) and a portable Makefile.
+ *   Because evaluation may run in-memory (tcc JIT) or through the
+ *   temp-executable fallback on hardened kernels, the graph and the
+ *   emission both live in this engine: on the fallback the child
+ *   process builds the graph in its own copy of this object (linked
+ *   from the registered link object) and writes the backends itself.
+ *   thorn_engine.c therefore contains no main(); the CLI lives in
+ *   src/thorn_main.c, and this file compiles under the
+ *   -D<stem>=c_thorn_engine_<stem> renames so the fallback link
+ *   resolves every registered symbol.
  *
  * Pith ABI notes (verified against pith 0.1.0 sources):
- *   - string parameters are borrowed PithValue* (NUL-terminated data,
- *     do not free; copy with strdup when storing)
- *   - int parameters/returns are 32-bit (w class); Pith narrows its
- *     64-bit integers automatically
- *   - every ABI function returns int so Pith can call it as a bare
+ *   - string parameters are borrowed PithValue* (NUL-terminated,
+ *     copy with strdup when storing)
+ *   - int parameters/returns are 32-bit ('w'); pith narrows its
+ *     64-bit integers at the boundary
+ *   - every API function returns int so pith can call it as a bare
  *     statement or test it with `if`
- *   - zero-parameter ABI functions double as pseudo-constants in
- *     Pith: `thorn_engine.exe` (bare member access emits the call)
- *
- * Identifier discipline: this file is compiled with
- *   -Dproject=c_thorn_engine_project -Dexe=c_thorn_engine_exe ...
- * so no other identifier here may reuse an ABI stem.
+ *   - zero-parameter functions double as pseudo-constants in pith:
+ *     `thorn_engine.exe` (bare member access emits the call)
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <pith.h>
 
-#include "thorn_engine.h"
-
-/* The Pith entry point baked into this binary. Each project
- * overrides it at engine compile time; the symbol contract is
- * c_thorn_<pith.toml author>_<pith.toml name>_thorn_configure. */
-#ifndef THORN_CONFIGURE_SYMBOL
-#define THORN_CONFIGURE_SYMBOL c_thorn_build_thorn_configure
-#endif
+#include "include/thorn_engine.h"
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                        */
 /* ------------------------------------------------------------------ */
 
-static void thorn_diag(const char *fmt, ...)
+void thorn_diag(const char *fmt, ...)
 {
     va_list ap;
     fputs("thorn: ", stderr);
@@ -198,7 +196,57 @@ Target *graph_add(Graph *g, const char *name, int type)
 }
 
 /* ------------------------------------------------------------------ */
-/* The Pith-facing C ABI                                              */
+/* Path helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+void thorn_join_path(char *out, size_t n, const char *dir,
+                     const char *name)
+{
+    if (strcmp(dir, ".") == 0)
+        snprintf(out, n, "%s", name);
+    else
+        snprintf(out, n, "%s/%s", dir, name);
+}
+
+void thorn_dir_prefix(const char *path, char *prefix, size_t n)
+{
+    const char *slash = strrchr(path, '/');
+    if (!slash || slash == path) {
+        prefix[0] = '\0';
+        return;
+    }
+    size_t len = (size_t)(slash - path);
+    if (len >= n)
+        len = n - 1;
+    memcpy(prefix, path, len);
+    prefix[len] = '\0';
+    if (len + 1 < n) {
+        prefix[len] = '/';
+        prefix[len + 1] = '\0';
+    }
+}
+
+int thorn_makedirs(const char *dir)
+{
+    char tmp[4096];
+    snprintf(tmp, sizeof(tmp), "%s", dir);
+    size_t l = strlen(tmp);
+    for (size_t i = 1; i <= l; i++) {
+        if (tmp[i] == '/' || tmp[i] == '\0') {
+            char c = tmp[i];
+            tmp[i] = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                thorn_diag("cannot create directory %s", tmp);
+                return -1;
+            }
+            tmp[i] = c;
+        }
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* The host-facing API (thorn_engine.* in pith)                       */
 /* ------------------------------------------------------------------ */
 
 static Graph g_graph;
@@ -229,7 +277,7 @@ static Target *want_target(const char *api, PithValue *name)
     return t;
 }
 
-/* int returns cross to Pith as 32-bit words, widened via extsw. */
+/* int returns cross to pith as 32-bit words, widened via extsw. */
 
 int project(PithValue *name)
 {
@@ -243,7 +291,7 @@ int project(PithValue *name)
     return 1;
 }
 
-/* Zero-argument pseudo-constants: Pith reads these through bare
+/* Zero-argument pseudo-constants: pith reads these through bare
  * member access (`thorn_engine.exe`). */
 int exe(void)          { return THORN_EXE; }
 int static_lib(void)   { return THORN_STATIC_LIB; }
@@ -351,7 +399,7 @@ int add_order_dep(PithValue *target, PithValue *prereq)
  * thorn_engine.pkg_config(target, pkg) runs `pkg-config --cflags
  * --libs <pkg>` and folds the result into the target: -I dirs become
  * includes, -l/-L become ldflags, everything else becomes cflags.
- * (Pith has no string-splitting primitives, so the split lives here.)
+ * (pith has no string-splitting primitives, so the split lives here.)
  */
 int pkg_config(PithValue *target, PithValue *pkg)
 {
@@ -365,8 +413,7 @@ int pkg_config(PithValue *target, PithValue *pkg)
     const char *pn = pithStringData(pkg);
 
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "pkg-config --cflags --libs '%s'",
-             pn);
+    snprintf(cmd, sizeof(cmd), "pkg-config --cflags --libs '%s'", pn);
     FILE *p = popen(cmd, "r");
     if (!p) {
         thorn_diag("pkg_config(): cannot run pkg-config");
@@ -401,6 +448,72 @@ int pkg_config(PithValue *target, PithValue *pkg)
         else
             strlist_push(&t->cflags, tok);
     }
+    return 1;
+}
+
+/*
+ * thorn_engine.emit() - the emission trigger thorn appends to every
+ * evaluated spec (and which specs may also call explicitly). Reads
+ * the backend selection from the environment the CLI exported, so
+ * evaluation behaves identically in-process (in-memory tcc) and in
+ * the temp-executable fallback child.
+ */
+int emit(void)
+{
+    ensure_graph();
+
+    const char *dir = getenv("THORN_OUT_DIR");
+    if (!dir || !*dir)
+        dir = ".";
+    int want_nin = 1, want_mk = 1;
+    const char *v;
+    if ((v = getenv("THORN_EMIT_NINJA")) && strcmp(v, "0") == 0)
+        want_nin = 0;
+    if ((v = getenv("THORN_EMIT_MAKE")) && strcmp(v, "0") == 0)
+        want_mk = 0;
+    if (!want_nin && !want_mk) {
+        thorn_diag("no backend selected");
+        return 0;
+    }
+    if (g_graph.count == 0) {
+        thorn_diag("the specification declared no targets");
+        return 0;
+    }
+    if (strcmp(dir, ".") != 0 && thorn_makedirs(dir) != 0)
+        return 0;
+
+    const char *cc = getenv("CC");
+    if (!cc || !*cc)
+        cc = "cc";
+    const char *ar = getenv("AR");
+    if (!ar || !*ar)
+        ar = "ar";
+
+    char np[4096], mp[4096];
+    thorn_join_path(np, sizeof(np), dir, "build.ninja");
+    thorn_join_path(mp, sizeof(mp), dir, "Makefile");
+
+    int fail = 0;
+    if (want_nin)
+        fail |= thorn_emit_ninja(&g_graph, cc, ar, np);
+    if (want_mk)
+        fail |= thorn_emit_makefile(&g_graph, cc, ar, mp);
+    if (fail)
+        return 0;
+
+    size_t total_sources = 0;
+    for (size_t i = 0; i < g_graph.count; i++)
+        total_sources += g_graph.targets[i].sources.count;
+
+    printf("thorn: configured project `%s` (%zu target%s, %zu "
+           "source%s)\n", g_graph.proj, g_graph.count,
+           g_graph.count == 1 ? "" : "s", total_sources,
+           total_sources == 1 ? "" : "s");
+    if (want_nin)
+        printf("thorn: wrote %s (build with: samu -f %s or "
+               "ninja -f %s)\n", np, np, np);
+    if (want_mk)
+        printf("thorn: wrote %s (build with: make -f %s)\n", mp, mp);
     return 1;
 }
 
@@ -443,7 +556,7 @@ static const char *type_const(int type)
  * recipes carry the true source paths.
  */
 static void obj_name(const Target *t, const char *src, char *out,
-                      size_t n)
+                     size_t n)
 {
     char tmp[512];
     size_t o = 0;
@@ -487,6 +600,27 @@ static int ldflags_text(const Target *t, SBuf *b)
     return 0;
 }
 
+/* An emitted OUTPUT name, prefixed with the backend file's directory
+ * ("out/artifacts/build.ninja" puts its objects under out/artifacts).
+ * Inputs stay project-root relative; the backends run from the root. */
+static void out_name(char *out, size_t n, const char *pfx,
+                      const char *name)
+{
+    snprintf(out, n, "%s%s", pfx, name);
+}
+
+/* The artifact name of a target: executables keep the declared name,
+ * libraries gain their conventional extension. */
+static void artifact_name(const Target *t, char *out, size_t n)
+{
+    if (t->type == THORN_STATIC_LIB)
+        snprintf(out, n, "%s.a", t->name);
+    else if (t->type == THORN_SHARED_LIB)
+        snprintf(out, n, "%s.so", t->name);
+    else
+        snprintf(out, n, "%s", t->name);
+}
+
 /* ------------------------------------------------------------------ */
 /* Ninja emitter                                                      */
 /* ------------------------------------------------------------------ */
@@ -503,6 +637,9 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
         thorn_diag("cannot write %s", path);
         return 1;
     }
+
+    char pfx[2048];
+    thorn_dir_prefix(path, pfx, sizeof(pfx));
 
     fprintf(f, "# build.ninja - generated by thorn " THORN_VERSION
                ", do not edit\n");
@@ -529,15 +666,25 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
     fprintf(f, "  command = $cc -shared $in $ldflags -o $out\n");
     fprintf(f, "  description = SOLINK $out\n\n");
 
-    fprintf(f, "build %s_all: phony", g->proj);
-    for (size_t i = 0; i < g->count; i++)
-        fprintf(f, " %s", g->targets[i].name);
-    fprintf(f, "\ndefault %s_all\n\n", g->proj);
+    {
+        char all[2048], tgt[2048], aname[512];
+        out_name(all, sizeof(all), pfx, "thorn_all");
+        fprintf(f, "build %s_%s: phony", all, g->proj);
+        for (size_t i = 0; i < g->count; i++) {
+            artifact_name(&g->targets[i], aname, sizeof(aname));
+            out_name(tgt, sizeof(tgt), pfx, aname);
+            fprintf(f, " %s", tgt);
+        }
+        fprintf(f, "\ndefault %s_%s\n\n", all, g->proj);
+    }
 
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
         SBuf ctext;
         flags_text(t, &ctext);
+        char tname[2048], aname[512], obj[1024];
+        artifact_name(t, aname, sizeof(aname));
+        out_name(tname, sizeof(tname), pfx, aname);
 
         fprintf(f, "# target %s (%s)\n", t->name, type_name(t->type));
 
@@ -545,9 +692,8 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
             const char *src = t->sources.items[s];
             if (!is_c_source(src))
                 continue;   /* raw link input, appears on the edge */
-            char obj[1024];
             obj_name(t, src, obj, sizeof(obj));
-            fprintf(f, "build %s: cc %s", obj, src);
+            fprintf(f, "build %s%s: cc %s", pfx, obj, src);
             /* order-only deps on compile edges: build the generated
              * prerequisite first, but header regeneration must not
              * recompile the world (ninja order-only semantics) */
@@ -561,13 +707,12 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
         const char *rule = t->type == THORN_STATIC_LIB ? "ar"
                         : t->type == THORN_SHARED_LIB ? "solink"
                                                       : "link";
-        fprintf(f, "build %s: %s", t->name, rule);
+        fprintf(f, "build %s: %s", tname, rule);
         for (size_t s = 0; s < t->sources.count; s++) {
             const char *src = t->sources.items[s];
-            char obj[1024];
             if (is_c_source(src)) {
                 obj_name(t, src, obj, sizeof(obj));
-                fprintf(f, " %s", obj);
+                fprintf(f, " %s%s", pfx, obj);
             } else {
                 fprintf(f, " %s", src);
             }
@@ -627,6 +772,8 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
         return 1;
     }
     int pattern = make_uses_pattern(g);
+    char pfx[2048];
+    thorn_dir_prefix(path, pfx, sizeof(pfx));
 
     fprintf(f, "# Makefile - generated by thorn " THORN_VERSION
                ", do not edit\n");
@@ -639,19 +786,19 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
     /* per-target variables */
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
+        char obj[1024];
         fprintf(f, "%s_OBJS =", t->name);
         for (size_t s = 0; s < t->sources.count; s++) {
             const char *src = t->sources.items[s];
             if (!is_c_source(src))
                 continue;
-            char obj[1024];
             if (pattern) {
                 snprintf(obj, sizeof(obj), "%s", src);
                 obj[strlen(obj) - 1] = 'o';
             } else {
                 obj_name(t, src, obj, sizeof(obj));
             }
-            fprintf(f, " %s", obj);
+            fprintf(f, " %s%s", pfx, obj);
         }
         fprintf(f, "\n");
         SBuf ctext;
@@ -670,14 +817,20 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
 
     /* all: the aggregate */
     fprintf(f, "all:");
-    for (size_t i = 0; i < g->count; i++)
-        fprintf(f, " %s", g->targets[i].name);
+    for (size_t i = 0; i < g->count; i++) {
+        char aname[512];
+        artifact_name(&g->targets[i], aname, sizeof(aname));
+        fprintf(f, " %s%s", pfx, aname);
+    }
     fprintf(f, "\n\n");
 
     /* link/archive rules */
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
-        fprintf(f, "%s: $(%s_OBJS)", t->name, t->name);
+        char tname[2048], aname[512];
+        artifact_name(t, aname, sizeof(aname));
+        out_name(tname, sizeof(tname), pfx, aname);
+        fprintf(f, "%s: $(%s_OBJS)", tname, t->name);
         for (size_t s = 0; s < t->sources.count; s++)
             if (!is_c_source(t->sources.items[s]))
                 fprintf(f, " %s", t->sources.items[s]);
@@ -704,7 +857,7 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
     /* compile rules */
     if (pattern) {
         Target *t = &g->targets[0];
-        fprintf(f, "%%.o: %%.c\n");
+        fprintf(f, "%s%%.o: %%.c\n", pfx);
         if (t->cflags.count > 0 || t->includes.count > 0)
             fprintf(f, "\t$(CC) $(%s_CFLAGS) -MMD -MP -c $< -o $@\n\n",
                     t->name);
@@ -713,13 +866,13 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
     } else {
         for (size_t i = 0; i < g->count; i++) {
             Target *t = &g->targets[i];
+            char obj[1024];
             for (size_t s = 0; s < t->sources.count; s++) {
                 const char *src = t->sources.items[s];
                 if (!is_c_source(src))
                     continue;
-                char obj[1024];
                 obj_name(t, src, obj, sizeof(obj));
-                fprintf(f, "%s: %s", obj, src);
+                fprintf(f, "%s%s: %s", pfx, obj, src);
                 for (size_t d = 0; d < t->order_deps.count; d++)
                     fprintf(f, " %s", t->order_deps.items[d]);
                 fprintf(f, "\n");
@@ -737,21 +890,27 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
     fprintf(f, "clean:\n\trm -f");
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
+        char obj[1024];
         for (size_t s = 0; s < t->sources.count; s++) {
             const char *src = t->sources.items[s];
             if (!is_c_source(src))
                 continue;
-            char obj[1024];
             if (pattern) {
                 snprintf(obj, sizeof(obj), "%s", src);
                 obj[strlen(obj) - 1] = 'o';
-                fprintf(f, " %s", obj);
+                fprintf(f, " %s%s.d %s%s", pfx, obj, pfx, obj);
             } else {
                 obj_name(t, src, obj, sizeof(obj));
-                fprintf(f, " %s", obj);
+                char dep[1024];
+                snprintf(dep, sizeof(dep), "%s", obj);
+                dep[strlen(dep) - 1] = 'd';
+                fprintf(f, " %s%s %s%s", pfx, obj, pfx, dep);
             }
         }
-        fprintf(f, " %s", t->name);
+        char tname[2048], aname[512];
+        artifact_name(t, aname, sizeof(aname));
+        out_name(tname, sizeof(tname), pfx, aname);
+        fprintf(f, " %s", tname);
     }
     fprintf(f, "\n\n");
 
@@ -761,20 +920,19 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
     fprintf(f, "-include");
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
+        char dep[1024];
         for (size_t s = 0; s < t->sources.count; s++) {
             const char *src = t->sources.items[s];
             if (!is_c_source(src))
                 continue;
-            char dep[1024];
             if (pattern) {
                 snprintf(dep, sizeof(dep), "%s", src);
                 dep[strlen(dep) - 1] = 'd';
             } else {
                 obj_name(t, src, dep, sizeof(dep));
-                size_t dl = strlen(dep);
-                dep[dl - 1] = 'd';
+                dep[strlen(dep) - 1] = 'd';
             }
-            fprintf(f, " %s", dep);
+            fprintf(f, " %s%s", pfx, dep);
         }
     }
     fprintf(f, "\n");
@@ -794,209 +952,32 @@ int thorn_print_spec(const Graph *g, FILE *out, const char **notes,
                  "\n");
     fprintf(out, "# decompiled from an existing build graph; review "
                  "before use\n\n");
-    fprintf(out, "import \"thorn_engine.c\"\n\n");
-    fprintf(out, "fn thorn_configure()\n");
-    fprintf(out, "    thorn_engine.project(\"%s\")\n\n", g->proj);
+    fprintf(out, "thorn_engine.project(\"%s\")\n\n", g->proj);
 
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
-        fprintf(out, "    thorn_engine.add_target(\"%s\", "
+        fprintf(out, "thorn_engine.add_target(\"%s\", "
                      "thorn_engine.%s)\n", t->name,
                 type_const(t->type));
         for (size_t s = 0; s < t->sources.count; s++)
-            fprintf(out, "    thorn_engine.add_source(\"%s\", \"%s\")"
-                         "\n", t->name, t->sources.items[s]);
+            fprintf(out, "thorn_engine.add_source(\"%s\", \"%s\")\n",
+                    t->name, t->sources.items[s]);
         for (size_t s = 0; s < t->includes.count; s++)
-            fprintf(out, "    thorn_engine.add_include(\"%s\", \"%s\")"
-                         "\n", t->name, t->includes.items[s]);
+            fprintf(out, "thorn_engine.add_include(\"%s\", \"%s\")\n",
+                    t->name, t->includes.items[s]);
         for (size_t s = 0; s < t->cflags.count; s++)
-            fprintf(out, "    thorn_engine.add_cflag(\"%s\", \"%s\")\n",
+            fprintf(out, "thorn_engine.add_cflag(\"%s\", \"%s\")\n",
                     t->name, t->cflags.items[s]);
         for (size_t s = 0; s < t->ldflags.count; s++)
-            fprintf(out, "    thorn_engine.add_ldflag(\"%s\", \"%s\")\n",
+            fprintf(out, "thorn_engine.add_ldflag(\"%s\", \"%s\")\n",
                     t->name, t->ldflags.items[s]);
         for (size_t s = 0; s < t->order_deps.count; s++)
-            fprintf(out, "    thorn_engine.add_order_dep(\"%s\", "
-                         "\"%s\")\n", t->name, t->order_deps.items[s]);
+            fprintf(out, "thorn_engine.add_order_dep(\"%s\", \"%s\")"
+                         "\n", t->name, t->order_deps.items[s]);
         fprintf(out, "\n");
     }
-    fprintf(out, "end\n");
 
     for (size_t i = 0; i < nnotes; i++)
         fprintf(out, "\n# note: %s\n", notes[i]);
     return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* CLI                                                                */
-/* ------------------------------------------------------------------ */
-
-static void usage(void)
-{
-    printf("thorn " THORN_VERSION " - a lean meta-build generator "
-           "that dogfoods pith\n\n"
-           "USAGE:\n"
-           "    thorn                       emit build.ninja and "
-           "Makefile in cwd\n"
-           "    thorn build [--ninja|--make]\n"
-           "    thorn decompile <build.ninja|Makefile> [-o out.thorn]\n"
-           "    thorn help\n"
-           "    thorn version\n\n"
-           "The project specification (build.thorn) is compiled into "
-           "this binary\n"
-           "at link time; `thorn` invokes it, collects the graph, and "
-           "writes the\n"
-           "backends. CC/AR environment variables override the baked "
-           "toolchain.\n");
-}
-
-static int cmd_build(int want_ninja, int want_make)
-{
-    graph_init(&g_graph);
-    g_ready = 1;
-
-    extern long THORN_CONFIGURE_SYMBOL(void);
-    long rc = THORN_CONFIGURE_SYMBOL();
-    if (rc != 0) {
-        thorn_diag("thorn_configure() returned %ld", rc);
-        graph_free(&g_graph);
-        return 1;
-    }
-    if (g_graph.count == 0) {
-        thorn_diag("the specification declared no targets");
-        graph_free(&g_graph);
-        return 1;
-    }
-
-    const char *cc = getenv("CC");
-    if (!cc || !*cc)
-        cc = "cc";
-    const char *ar = getenv("AR");
-    if (!ar || !*ar)
-        ar = "ar";
-
-    size_t total_sources = 0;
-    for (size_t i = 0; i < g_graph.count; i++)
-        total_sources += g_graph.targets[i].sources.count;
-
-    int fail = 0;
-    if (want_ninja)
-        fail |= thorn_emit_ninja(&g_graph, cc, ar, "build.ninja");
-    if (want_make)
-        fail |= thorn_emit_makefile(&g_graph, cc, ar, "Makefile");
-
-    if (!fail) {
-        printf("thorn: configured project `%s` (%zu target%s, %zu "
-               "source%s)\n", g_graph.proj, g_graph.count,
-               g_graph.count == 1 ? "" : "s", total_sources,
-               total_sources == 1 ? "" : "s");
-        if (want_ninja)
-            printf("thorn: wrote build.ninja (build with: samu or "
-                   "ninja)\n");
-        if (want_make)
-            printf("thorn: wrote Makefile (build with: make)\n");
-    }
-    graph_free(&g_graph);
-    g_ready = 0;
-    return fail ? 1 : 0;
-}
-
-static int cmd_decompile(const char *in, const char *out)
-{
-    Graph g;
-    graph_init(&g);
-    char **notes = NULL;
-    size_t nnotes = 0;
-
-    if (thorn_decompile_file(in, &g, &notes, &nnotes) != 0) {
-        graph_free(&g);
-        return 1;
-    }
-    if (g.count == 0) {
-        thorn_diag("no buildable targets found in %s", in);
-        graph_free(&g);
-        return 1;
-    }
-
-    FILE *f = fopen(out, "w");
-    if (!f) {
-        thorn_diag("cannot write %s", out);
-        graph_free(&g);
-        return 1;
-    }
-    thorn_print_spec(&g, f, (const char **)notes, nnotes);
-    fclose(f);
-
-    printf("thorn: decompiled %s into %s (%zu target%s, %zu note%s)\n",
-           in, out, g.count, g.count == 1 ? "" : "s", nnotes,
-           nnotes == 1 ? "" : "s");
-
-    for (size_t i = 0; i < nnotes; i++)
-        free(notes[i]);
-    free(notes);
-    graph_free(&g);
-    return 0;
-}
-
-int main(int argc, char **argv)
-{
-    /* a leading flag implies the build verb: thorn --ninja */
-    int argbase = 1;
-    const char *verb = "build";
-    if (argc >= 2 && argv[1][0] != '-') {
-        verb = argv[1];
-        argbase = 2;
-    }
-
-    if (strcmp(verb, "build") == 0) {
-        int want_ninja = 1, want_make = 1;
-        for (int i = argbase; i < argc; i++) {
-            if (strcmp(argv[i], "--ninja") == 0)
-                want_make = 0;
-            else if (strcmp(argv[i], "--make") == 0)
-                want_ninja = 0;
-            else {
-                thorn_diag("unknown flag `%s`", argv[i]);
-                usage();
-                return 2;
-            }
-        }
-        return cmd_build(want_ninja, want_make);
-    }
-
-    if (strcmp(verb, "decompile") == 0) {
-        const char *in = NULL;
-        const char *out = "build.thorn";
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-                out = argv[++i];
-            } else if (!in) {
-                in = argv[i];
-            } else {
-                thorn_diag("unexpected argument `%s`", argv[i]);
-                usage();
-                return 2;
-            }
-        }
-        if (!in) {
-            thorn_diag("decompile expects an input file");
-            usage();
-            return 2;
-        }
-        return cmd_decompile(in, out);
-    }
-
-    if (strcmp(verb, "help") == 0 || strcmp(verb, "--help") == 0 ||
-        strcmp(verb, "-h") == 0) {
-        usage();
-        return 0;
-    }
-    if (strcmp(verb, "version") == 0 || strcmp(verb, "--version") == 0) {
-        printf("thorn " THORN_VERSION "\n");
-        return 0;
-    }
-
-    thorn_diag("unknown command `%s`", verb);
-    usage();
-    return 2;
 }

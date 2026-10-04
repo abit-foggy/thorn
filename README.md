@@ -4,61 +4,65 @@
 >
 > The sharp spine on the stem of a plant. A thorn grows on the pith.
 
-A lean, native meta-build generator that dogfoods
-[pith](https://github.com/abit-foggy/pith): the project specification
-is a **Pith script compiled to machine code** and linked directly
-against a C99 engine. No VM, no interpreter, no runtime config
-parsing — in the QBE spirit: minimal, zero-bloat, deterministic.
+A lean, native meta-build generator that **embeds**
+[pith](https://github.com/abit-foggy/pith) the way a game engine embeds
+a scripting language: thorn carries pith's frontend, reads
+`build.thorn` at runtime, and evaluates it with the build API
+registered as a host namespace. No VM, no interpreter semantics, no
+per-project binaries — in the QBE spirit: minimal, zero-bloat,
+deterministic.
 
 ```
-[ build.thorn ]  (a pith script)
-      |
-      |  pith build --plugin        (compiles AOT to an object file)
-      v
-[ build_thorn.o ] --exports c_thorn_<author>_<name>_thorn_configure()
-      |
-      |  Direct C ABI link ($CC)
-      v
-[ thorn_engine.o ] + [ thorn_decompile.o ] + pith's libruntime.a
-      |
-      v
-    thorn  ----->  build.ninja  (samurai / ninja)
-              --->  Makefile    (portable make)
-              --->  thorn decompile build.ninja  --->  build.thorn
+                build.thorn (a pith script, read at runtime)
+                      |
+                      |  thorn embeds pith (pith_embed.h)
+                      |  host API = the thorn_engine.* namespace
+                      v
+    [ out/thorn ]  ---- thorn_engine.add_target / add_source / ...
+              |           (direct C ABI calls, typed by pith's FFI)
+              |
+              |  thorn_engine.emit()  (appended by the CLI)
+              v
+    out/artifacts/build.ninja   (samurai / ninja, deps = gcc depfiles)
+    out/artifacts/Makefile      (portable make, -MMD -MP)
+              |
+              v
+    thorn decompile <backend>  ->  idiomatic build.thorn
 ```
 
-## Forward generation
+## Usage
 
 ```
-thorn                       emit build.ninja and Makefile in cwd
-thorn build [--ninja|--make]
-thorn decompile <file> [-o out.thorn]
+thorn                              evaluate build.thorn, emit backends
+thorn build [-f spec] [--out-dir dir] [--ninja|--make]
+thorn decompile <build.ninja|Makefile> [-o out.thorn]
 thorn help | version
 ```
 
-`thorn` invokes the compiled-in Pith entry point (`thorn_configure()`),
-which configures the build graph by calling the engine's C ABI directly
-through pith's FFI. The engine then emits deterministic backends:
-identical graph and environment produce identical bytes. Header
-dependencies are handled by the backends themselves (`deps = gcc` with
-`-MD -MF`, `-MMD -MP` in make) — no custom dependency parsing.
+Backends are written to `--out-dir` (default: the project root) and
+built from the root:
 
-`CC`/`AR` environment variables override the baked toolchain.
+```
+thorn --out-dir out/artifacts
+samu -f out/artifacts/build.ninja
+make -f out/artifacts/Makefile
+```
+
+Outputs land in `out/artifacts`; source paths stay project-root
+relative. `CC`/`AR` override the baked toolchain. `THORN_ENGINE_OBJ`
+overrides the fallback link object (default: resolved next to the
+binary).
 
 ## The specification
 
 ```pith
-import "thorn_engine.c"
+thorn_engine.project("demo")
 
-fn thorn_configure()
-    thorn_engine.project("demo")
-
-    thorn_engine.add_target("demo_app", thorn_engine.exe)
-    thorn_engine.add_source("demo_app", "main.c")
-    thorn_engine.add_include("demo_app", ".")
-    thorn_engine.add_cflag("demo_app", "-O2")
-    thorn_engine.add_ldflag("demo_app", "-lm")
-end
+thorn_engine.add_target("demo_app", thorn_engine.exe)
+thorn_engine.add_source("demo_app", "main.c")
+thorn_engine.add_include("demo_app", ".")
+thorn_engine.add_cflag("demo_app", "-O2")
+thorn_engine.add_ldflag("demo_app", "-lm")
 ```
 
 | Call | Meaning |
@@ -72,55 +76,56 @@ end
 | `thorn_engine.add_include(target, dir)` | `-I` directory |
 | `thorn_engine.add_order_dep(target, prereq)` | regeneration-order prerequisite (order-only `\|\|` on compile edges, implicit `\|` on link edges) |
 | `thorn_engine.pkg_config(target, pkg)` | folds `pkg-config --cflags --libs` into the target |
+| `thorn_engine.emit()` | write the backends (the CLI appends this automatically) |
 
-Graph state lives entirely in the C engine: pith v0.1 has no
-collections, and keeping the spec declarative is the lean design
-anyway. The decompiler is likewise C99 — pith has no string-splitting
-primitives yet.
+Do not call `proc.exit()` in a spec before it finishes: emission runs
+after the last statement.
 
-## Bootstrap recipe (per project)
+## How the embedding works
 
-thorn is a **generated per-project binary** — the spec is compiled in
-at link time (there is no runtime interpreter). Each project needs a
-`pith.toml` fixing the entry symbol:
+thorn uses pith's embed C ABI (`pith_embed.h`):
 
-```toml
-[project]
-author = "thorn"
-name = "demo"        # the binary will call c_thorn_demo_thorn_configure()
-```
+- `pith_register_ns_fn` registers every API function under the
+  `thorn_engine` namespace with its FFI signature, so the compiler
+  resolves `thorn_engine.add_target(...)` exactly like a native C
+  import: typed calls straight through the C ABI (System V AMD64 /
+  AAPCS64), zero-arg members readable as pseudo-constants, string
+  parameters borrowed, `int` returns usable as statements or values.
+- `pith_eval_string` compiles and runs the spec. On hardened kernels
+  where in-memory JIT is blocked (SELinux `mprotect`), pith falls back
+  to a temporary executable; `pith_register_link_object` supplies
+  `out/artifacts/thorn_engine.o` — compiled under the
+  `-D<stem>=c_thorn_engine_<stem>` renames that mirror pith's import
+  mangling — so host functions resolve in the child process. The graph
+  and `emit()` live in the engine, so evaluation behaves identically
+  on both backends.
 
-```sh
-pith build build.thorn --plugin -o build_thorn
-tar -xOf build_thorn.ppkg plugin.o > build_thorn.o
-cc -D<stem>=c_thorn_engine_<stem> ... thorn_engine.c ...      # see the Makefile
-cc thorn_engine.o thorn_decompile.o build_thorn.o \
-   ~/pith/runtime/libruntime.a -o my-thorn
-./my-thorn && samu
-```
-
-The `-D<stem>=c_thorn_engine_<stem>` renames are the author-aware
-symbol mangling pith applies to every imported C unit; the engine is
-compiled with the identical defines. The bootstrap `Makefile` in this
-repo encodes the full recipe, `verify.sh` runs the acceptance suite,
-and thorn's own `build.thorn` carries the renames as plain cflags so
-the stage 2 self-build works.
+`src/thorn_engine.c` therefore has no `main()`; the CLI is
+`src/thorn_main.c`.
 
 ## Self-hosting
 
-thorn builds itself: `make` (stage 1), then `./thorn --ninja && samu`
-regenerates and rebuilds thorn from its own emitted ninja. The only
-input stage 2 takes from stage 1 is `build_thorn.o`, the pith-compiled
-configure object (pith compilation itself stays in the bootstrap).
+`make` builds `out/thorn` (stage 1). Then:
+
+```
+make selfhost          # or: ./out/thorn --out-dir out/artifacts
+                       #      samu -f out/artifacts/build.ninja
+```
+
+thorn evaluates its own `build.thorn`, emits its backend, and samu
+rebuilds thorn — engine, CLI, decompiler, and the embedded pith
+frontend — from it. `build.thorn` carries the symbol renames as plain
+cflags, so the self-built `out/artifacts/thorn_core.a` doubles as its
+own fallback link object.
 
 ## Reverse decompilation
 
 `thorn decompile` reads a `build.ninja` or a `Makefile` (detected by
-content), reconstructs the graph (targets, sources, includes, cflags,
-ldflags, order deps), and writes an idiomatic `build.thorn` — with
-honest `# note:` comments for everything outside the model (pools,
-custom codegen rules, conditionals, ...). Verified end-to-end: the
-decompiled spec regenerates a byte-identical `build.ninja`.
+content), reconstructs the graph, and writes an idiomatic top-level
+`build.thorn` — with honest `# note:` comments for everything outside
+the model (pools, custom codegen rules, conditionals, ...). Verified
+end-to-end: the decompiled spec regenerates a byte-identical
+`build.ninja`.
 
 ## Prerequisites & pith integration notes
 
@@ -129,28 +134,25 @@ decompiled spec regenerates a byte-identical `build.ninja`.
   fails because `realpath`/`mkdtemp` left the strict POSIX namespace
   (removed in POSIX.1-2024). Build pith with
   `make CFLAGS="-std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -Iinclude -D_DEFAULT_SOURCE"`.
-  (Suggested pith fix: add `-D_DEFAULT_SOURCE` to `POSIXDEF`.)
 - If the `patch(1)` utility is missing, apply the vendored patches
   manually: `cd vendor/qbe && git apply ../../patches/qbe-embed.patch`
   (and likewise for tcc), then run `make`.
-- Suggested pith additions that would sharpen thorn's workflow
-  (none are required): a direct object output (`pith build --object`)
-  to skip the tar extraction; plugin functions with parameters and
-  inter-fn calls; and a minimal string toolkit (`str.length` etc.).
-- On SELinux-hardened kernels, pith's in-memory tcc JIT may log an
-  mprotect fallback; pith falls back to its temp-executable path and
-  everything works.
+- On SELinux-hardened kernels the in-memory JIT is blocked; pith's
+  temp-executable fallback handles it (this repo is developed and
+  verified on such a host).
 
 ## Layout
 
 ```
-build.thorn        thorn's own spec (dogfood + stage 2 self-build)
-thorn_engine.c     graph, pith C ABI, ninja/make emitters, CLI
-thorn_engine.h     shared internal model
-thorn_decompile.c   ninja/Makefile ingestion -> build.thorn
-Makefile           stage 1 bootstrap
-verify.sh          acceptance suite (self-build, demo, roundtrip)
-demo/              a small multi-file C project + its build.thorn
+build.thorn           thorn's own spec (self-hosting)
+src/thorn_main.c      the CLI: spec loading, embed context, epilogue
+src/thorn_engine.c    graph, thorn_engine.* host API, emitters
+src/thorn_decompile.c ninja/Makefile ingestion -> build.thorn
+src/include/          internal headers
+out/                  the binary (out/thorn)
+out/artifacts/        objects, generated build.ninja and Makefile
+demo/                 a small multi-file C project + its build.thorn
+Makefile              stage 1 bootstrap; verify.sh acceptance suite
 ```
 
 ## License
