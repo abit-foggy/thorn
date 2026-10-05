@@ -4,8 +4,79 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#include <pith.h>
 #include "include/engine.h"
+
+#ifndef THORN_CORE_BUILD
+#include "engine.c"
+#endif
+
+/* Hook configuration and state */
+typedef struct {
+    char pat[128];
+    char val[256];
+} HookItem;
+
+typedef struct {
+    char proj[256];
+    char cc[256];
+    char ar[256];
+    char dir_pfx[512];
+    StrList ignore_targets;
+    StrList keep_targets;
+    StrList strip_cflags;
+    HookItem inject_cflags[128];
+    size_t ninject_cflags;
+    HookItem inject_includes[128];
+    size_t ninject_includes;
+    StrList remap_from;
+    StrList remap_to;
+} DecompHooks;
+
+static DecompHooks g_hooks;
+static Graph g_hook_graph;
+static int g_hook_ready = 0;
+static char **g_hook_notes = NULL;
+static size_t g_hook_nnotes = 0;
+
+static int pat_match(const char *pat, const char *str)
+{
+    if (!pat || !str)
+        return 0;
+    if (strcmp(pat, "*") == 0)
+        return 1;
+    while (*pat) {
+        if (*pat == '*') {
+            pat++;
+            if (!*pat)
+                return 1;
+            while (*str) {
+                if (pat_match(pat, str))
+                    return 1;
+                str++;
+            }
+            return 0;
+        }
+        if (*pat != '?' && *pat != *str)
+            return 0;
+        pat++;
+        str++;
+    }
+    return *str == '\0';
+}
+
+static int matches_any(const StrList *list, const char *str)
+{
+    if (!list || list->count == 0 || !str)
+        return 0;
+    for (size_t i = 0; i < list->count; i++) {
+        if (pat_match(list->items[i], str))
+            return 1;
+    }
+    return 0;
+}
 
 /* Notes & diagnostics */
 
@@ -571,10 +642,36 @@ static void parse_ninja(char *mem, NDoc *doc, char ***notes, size_t *nnotes)
     }
 }
 
+static void apply_target_hooks(Target *t)
+{
+    if (!t)
+        return;
+    if (g_hooks.strip_cflags.count > 0) {
+        StrList orig = t->cflags;
+        memset(&t->cflags, 0, sizeof(t->cflags));
+        for (size_t i = 0; i < orig.count; i++) {
+            if (!matches_any(&g_hooks.strip_cflags, orig.items[i]))
+                strlist_push(&t->cflags, orig.items[i]);
+            free(orig.items[i]);
+        }
+        free(orig.items);
+    }
+    for (size_t i = 0; i < g_hooks.ninject_cflags; i++) {
+        if (pat_match(g_hooks.inject_cflags[i].pat, t->name))
+            strlist_push(&t->cflags, g_hooks.inject_cflags[i].val);
+    }
+    for (size_t i = 0; i < g_hooks.ninject_includes; i++) {
+        if (pat_match(g_hooks.inject_includes[i].pat, t->name))
+            strlist_push(&t->includes, g_hooks.inject_includes[i].val);
+    }
+}
+
 static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
                       char ***notes, size_t *nnotes)
 {
-    if (doc->proj[0])
+    if (g_hooks.proj[0])
+        snprintf(g->proj, sizeof(g->proj), "%s", g_hooks.proj);
+    else if (doc->proj[0])
         snprintf(g->proj, sizeof(g->proj), "%s", doc->proj);
 
     /* classify each defined rule once */
@@ -616,8 +713,12 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
         cls[i] = rcls[ri];
         if (cls[i] == RC_OTHER && doc->rules[ri].command && e->nout > 0) {
             const char *out = strip_pfx(e->outs[0], pfx);
-            const char *in = e->nin > 0 ? strip_pfx(e->ins[0], pfx) : "";
-            graph_add_command(g, out, doc->rules[ri].command, in);
+            if (!matches_any(&g_hooks.ignore_targets, out)) {
+                if (g_hooks.keep_targets.count == 0 || matches_any(&g_hooks.keep_targets, out)) {
+                    const char *in = e->nin > 0 ? strip_pfx(e->ins[0], pfx) : "";
+                    graph_add_command(g, out, doc->rules[ri].command, in);
+                }
+            }
             consumed[i] = 1;
         }
     }
@@ -633,6 +734,17 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
         char nbuf[512];
         const char *name = clean_target(e->outs[0], pfx, nbuf,
                                         sizeof(nbuf));
+        for (size_t rm = 0; rm < g_hooks.remap_from.count; rm++) {
+            if (strcmp(g_hooks.remap_from.items[rm], name) == 0) {
+                name = g_hooks.remap_to.items[rm];
+                break;
+            }
+        }
+        if (matches_any(&g_hooks.ignore_targets, name))
+            continue;
+        if (g_hooks.keep_targets.count > 0 && !matches_any(&g_hooks.keep_targets, name))
+            continue;
+
         int type = c == RC_AR ? THORN_STATIC_LIB
                 : c == RC_SHARED ? THORN_SHARED_LIB
                                  : THORN_EXE;
@@ -752,6 +864,9 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
         }
     }
 
+    for (size_t i = 0; i < g->count; i++)
+        apply_target_hooks(&g->targets[i]);
+
     free(consumed);
     free(cls);
     free(assoc);
@@ -809,6 +924,22 @@ static void mvar_set(MVars *v, const char *k, const char *val)
     v->vk[v->nvars] = strdup(k);
     v->vv[v->nvars] = strdup(val);
     v->nvars++;
+}
+
+static void mvar_append(MVars *v, const char *k, const char *val)
+{
+    const char *old = mvar_get(v, k);
+    if (!old || !*old) {
+        mvar_set(v, k, val);
+        return;
+    }
+    size_t len = strlen(old) + 1 + strlen(val) + 1;
+    char *buf = malloc(len);
+    if (!buf)
+        return;
+    snprintf(buf, len, "%s %s", old, val);
+    mvar_set(v, k, buf);
+    free(buf);
 }
 
 static MRule *mdoc_add_rule(MDoc *d)
@@ -937,10 +1068,35 @@ static char *rule_recipe_text(const MRule *r, const MVars *v)
     return exp;
 }
 
+static void preprocess_make_lines(char *str)
+{
+    char *r = str;
+    char *w = str;
+    while (*r) {
+        if (*r == '\\') {
+            char *p = r + 1;
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '\r' && *(p + 1) == '\n') {
+                *w++ = ' ';
+                r = p + 2;
+                continue;
+            } else if (*p == '\n') {
+                *w++ = ' ';
+                r = p + 1;
+                continue;
+            }
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}
+
 static void parse_make(char *mem, MDoc *doc, char ***notes, size_t *nnotes)
 {
+    preprocess_make_lines(mem);
     MRule *cur = NULL;
-    int noted_cont = 0, noted_plus = 0, noted_directive = 0;
+    int noted_directive = 0;
 
     char *p = mem;
     while (p && *p) {
@@ -984,30 +1140,33 @@ static void parse_make(char *mem, MDoc *doc, char ***notes, size_t *nnotes)
             }
             continue;
         }
-        if (s[strlen(s) - 1] == '\\' && !noted_cont) {
-            noted_cont = 1;
-            note_add(notes, nnotes,
-                     "backslash line continuations are not supported");
-        }
 
         char *eq = strchr(s, '=');
         char *co = strchr(s, ':');
-        if (eq && (!co || eq < co)) {
+        int is_assign = 0;
+        if (eq) {
+            if (!co || eq < co)
+                is_assign = 1;
+            else if (co + 1 == eq || (co > s && *(co - 1) == ':' && co == eq - 1))
+                is_assign = 1;
+        }
+        if (is_assign) {
             *eq = '\0';
             char *key = trim_inplace(s);
             size_t kl = strlen(key);
-            if (kl && (key[kl - 1] == '?' || key[kl - 1] == ':' ||
-                       key[kl - 1] == '+')) {
-                if (key[kl - 1] == '+' && !noted_plus) {
-                    noted_plus = 1;
-                    note_add(notes, nnotes,
-                             "`+=` assignments are treated as `=`");
-                }
+            int is_append = 0;
+            while (kl && (key[kl - 1] == '?' || key[kl - 1] == ':' ||
+                          key[kl - 1] == '+' || key[kl - 1] == '!')) {
+                if (key[kl - 1] == '+')
+                    is_append = 1;
                 key[--kl] = '\0';
                 key = trim_inplace(key);
             }
             char *val = trim_inplace(eq + 1);
-            mvar_set(&doc->vars, key, val);
+            if (is_append)
+                mvar_append(&doc->vars, key, val);
+            else
+                mvar_set(&doc->vars, key, val);
             cur = NULL;
             continue;
         }
@@ -1088,9 +1247,13 @@ static void subst_make_to_cmd(const char *in, char *out, size_t n)
 static void map_make(const MDoc *doc, Graph *g, const char *pfx,
                      char ***notes, size_t *nnotes)
 {
-    const char *pv = mvar_get(&doc->vars, "thorn_project");
-    if (pv)
-        snprintf(g->proj, sizeof(g->proj), "%s", pv);
+    if (g_hooks.proj[0])
+        snprintf(g->proj, sizeof(g->proj), "%s", g_hooks.proj);
+    else {
+        const char *pv = mvar_get(&doc->vars, "thorn_project");
+        if (pv)
+            snprintf(g->proj, sizeof(g->proj), "%s", pv);
+    }
 
     size_t nr = doc->nrules;
     int *cls = calloc(nr ? nr : 1, sizeof(int));
@@ -1241,6 +1404,17 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
                      "modeled");
         }
 
+        for (size_t rm = 0; rm < g_hooks.remap_from.count; rm++) {
+            if (strcmp(g_hooks.remap_from.items[rm], tgt) == 0) {
+                tgt = g_hooks.remap_to.items[rm];
+                break;
+            }
+        }
+        if (matches_any(&g_hooks.ignore_targets, tgt))
+            continue;
+        if (g_hooks.keep_targets.count > 0 && !matches_any(&g_hooks.keep_targets, tgt))
+            continue;
+
         int type = c == RC_AR || ends_with(tgt, ".a") ? THORN_STATIC_LIB
                 : c == RC_SHARED || ends_with(tgt, ".so")
                     ? THORN_SHARED_LIB
@@ -1340,6 +1514,111 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
         }
     }
 
+    /* Kbuild composite objects or obj-y/obj-m fallback */
+    if (g->count == 0) {
+        for (size_t i = 0; i < doc->vars.nvars; i++) {
+            const char *vk = doc->vars.vk[i];
+            const char *vv = doc->vars.vv[i];
+            if (!vk || !vv || !*vv)
+                continue;
+            const char *suffix = NULL;
+            if (ends_with(vk, "-objs"))
+                suffix = "-objs";
+            else if (ends_with(vk, "-y") && strcmp(vk, "obj-y") != 0 &&
+                     strcmp(vk, "ccflags-y") != 0 && strcmp(vk, "asflags-y") != 0)
+                suffix = "-y";
+
+            if (suffix) {
+                char tname[256];
+                size_t nlen = strlen(vk) - strlen(suffix);
+                if (nlen >= sizeof(tname))
+                    nlen = sizeof(tname) - 1;
+                memcpy(tname, vk, nlen);
+                tname[nlen] = '\0';
+
+                const char *tgt = tname;
+                for (size_t rm = 0; rm < g_hooks.remap_from.count; rm++) {
+                    if (strcmp(g_hooks.remap_from.items[rm], tgt) == 0) {
+                        tgt = g_hooks.remap_to.items[rm];
+                        break;
+                    }
+                }
+                if (matches_any(&g_hooks.ignore_targets, tgt))
+                    continue;
+                if (g_hooks.keep_targets.count > 0 && !matches_any(&g_hooks.keep_targets, tgt))
+                    continue;
+
+                Target *t = graph_add(g, tgt, THORN_STATIC_LIB);
+                if (!t)
+                    continue;
+
+                size_t nt = 0;
+                char **toks = split_owned(vv, &nt);
+                for (size_t k = 0; k < nt; k++) {
+                    const char *tok = toks[k];
+                    if (ends_with(tok, ".o")) {
+                        ObjInfo *oi = objmap_find(objmap, nobj, tok);
+                        if (oi) {
+                            oi->consumed = 1;
+                            strlist_push(&t->sources, oi->src);
+                        } else {
+                            char *src = swap_ext_dup(strip_pfx(tok, pfx), 'c');
+                            if (src) {
+                                strlist_push(&t->sources, src);
+                                free(src);
+                            }
+                        }
+                    } else if (ends_with(tok, ".c")) {
+                        strlist_push(&t->sources, strip_pfx(tok, pfx));
+                    }
+                }
+                free_tokens(toks, nt);
+            }
+        }
+
+        const char *obj_y = mvar_get(&doc->vars, "obj-y");
+        const char *obj_m = mvar_get(&doc->vars, "obj-m");
+        if ((obj_y || obj_m) && g->count == 0) {
+            const char *def_tgt = g_hooks.proj[0] ? g_hooks.proj : (g->proj[0] ? g->proj : "kbuild_target");
+            Target *t = graph_add(g, def_tgt, THORN_STATIC_LIB);
+            if (t) {
+                const char *lists[2] = { obj_y, obj_m };
+                for (int l = 0; l < 2; l++) {
+                    if (!lists[l]) continue;
+                    size_t nt = 0;
+                    char **toks = split_owned(lists[l], &nt);
+                    for (size_t k = 0; k < nt; k++) {
+                        const char *tok = toks[k];
+                        if (ends_with(tok, ".o")) {
+                            ObjInfo *oi = objmap_find(objmap, nobj, tok);
+                            if (oi) {
+                                oi->consumed = 1;
+                                strlist_push(&t->sources, oi->src);
+                            } else {
+                                char *src = swap_ext_dup(strip_pfx(tok, pfx), 'c');
+                                if (src) {
+                                    strlist_push(&t->sources, src);
+                                    free(src);
+                                }
+                            }
+                        } else if (ends_with(tok, ".c")) {
+                            strlist_push(&t->sources, strip_pfx(tok, pfx));
+                        }
+                    }
+                    free_tokens(toks, nt);
+                }
+            }
+        }
+    }
+
+    const char *ccflags = mvar_get(&doc->vars, "ccflags-y");
+    if (!ccflags) ccflags = mvar_get(&doc->vars, "EXTRA_CFLAGS");
+    if (ccflags && *ccflags) {
+        for (size_t i = 0; i < g->count; i++) {
+            harvest_flags_text(ccflags, &g->targets[i]);
+        }
+    }
+
     /* orphans and unmodeled rules */
     for (size_t i = 0; i < nobj; i++) {
         if (!objmap[i].consumed)
@@ -1355,11 +1634,15 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
         if (strcmp(tgt, ".PHONY") == 0 || strcmp(tgt, "all") == 0 ||
             strcmp(tgt, "clean") == 0)
             continue;
+        const char *out = strip_pfx(tgt, pfx);
+        if (matches_any(&g_hooks.ignore_targets, out))
+            continue;
+        if (g_hooks.keep_targets.count > 0 && !matches_any(&g_hooks.keep_targets, out))
+            continue;
         char *rec = rule_recipe_text(r, &doc->vars);
         if (rec) {
             char cmd_buf[2048];
             subst_make_to_cmd(rec, cmd_buf, sizeof(cmd_buf));
-            const char *out = strip_pfx(tgt, pfx);
             const char *in = r->nprq > 0 ? strip_pfx(r->prereqs[0], pfx) : "";
             graph_add_command(g, out, cmd_buf, in);
             free(rec);
@@ -1372,6 +1655,9 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
                      "dropped", tgt);
         }
     }
+
+    for (size_t i = 0; i < g->count; i++)
+        apply_target_hooks(&g->targets[i]);
 
     /* cleanup */
     for (size_t i = 0; i < nobj; i++) {
@@ -1426,7 +1712,10 @@ int decompile_file(const char *path, Graph *g, char ***notes,
     int rc = 1;
     if (sniff_is_ninja(mem)) {
         char pfx[2048];
-        dir_prefix(path, pfx, sizeof(pfx));
+        if (g_hooks.dir_pfx[0])
+            snprintf(pfx, sizeof(pfx), "%s", g_hooks.dir_pfx);
+        else
+            dir_prefix(path, pfx, sizeof(pfx));
         snprintf(g->backend, sizeof(g->backend), "ninja");
         NDoc doc;
         memset(&doc, 0, sizeof(doc));
@@ -1436,7 +1725,10 @@ int decompile_file(const char *path, Graph *g, char ***notes,
         rc = (g->count == 0 && g->cmd_count == 0);
     } else {
         char pfx[2048];
-        dir_prefix(path, pfx, sizeof(pfx));
+        if (g_hooks.dir_pfx[0])
+            snprintf(pfx, sizeof(pfx), "%s", g_hooks.dir_pfx);
+        else
+            dir_prefix(path, pfx, sizeof(pfx));
         snprintf(g->backend, sizeof(g->backend), "make");
         MDoc doc;
         memset(&doc, 0, sizeof(doc));
@@ -1450,4 +1742,421 @@ int decompile_file(const char *path, Graph *g, char ***notes,
     if (rc)
         diag("no buildable targets or commands found in %s", path);
     return rc;
+}
+
+/* Hookable decompiler API implementation */
+
+static const char *pv_to_cstr(PithValue *val)
+{
+    if (!val)
+        return "";
+    return pithStringData(val);
+}
+
+static PithValue *strlist_to_pith(const StrList *list)
+{
+    if (!list || list->count == 0)
+        return pithNewString("");
+    size_t total = 0;
+    for (size_t i = 0; i < list->count; i++)
+        total += strlen(list->items[i]) + 1;
+    char *buf = malloc(total + 1);
+    if (!buf)
+        return pithNewString("");
+    buf[0] = '\0';
+    for (size_t i = 0; i < list->count; i++) {
+        if (i)
+            strcat(buf, " ");
+        strcat(buf, list->items[i]);
+    }
+    PithValue *res = pithNewString(buf);
+    free(buf);
+    return res;
+}
+
+void reset(void)
+{
+    strlist_free(&g_hooks.ignore_targets);
+    strlist_free(&g_hooks.keep_targets);
+    strlist_free(&g_hooks.strip_cflags);
+    strlist_free(&g_hooks.remap_from);
+    strlist_free(&g_hooks.remap_to);
+    memset(&g_hooks, 0, sizeof(g_hooks));
+
+    if (g_hook_ready) {
+        graph_free(&g_hook_graph);
+        memset(&g_hook_graph, 0, sizeof(g_hook_graph));
+        g_hook_ready = 0;
+    }
+
+    for (size_t i = 0; i < g_hook_nnotes; i++)
+        free(g_hook_notes[i]);
+    free(g_hook_notes);
+    g_hook_notes = NULL;
+    g_hook_nnotes = 0;
+}
+
+void set_project(PithValue *name)
+{
+    const char *s = pv_to_cstr(name);
+    snprintf(g_hooks.proj, sizeof(g_hooks.proj), "%s", s);
+    if (g_hook_ready && g_hooks.proj[0])
+        snprintf(g_hook_graph.proj, sizeof(g_hook_graph.proj), "%s", g_hooks.proj);
+}
+
+void set_compiler(PithValue *cc)
+{
+    const char *s = pv_to_cstr(cc);
+    snprintf(g_hooks.cc, sizeof(g_hooks.cc), "%s", s);
+}
+
+void set_ar(PithValue *ar)
+{
+    const char *s = pv_to_cstr(ar);
+    snprintf(g_hooks.ar, sizeof(g_hooks.ar), "%s", s);
+}
+
+void set_dir_prefix(PithValue *pfx)
+{
+    const char *s = pv_to_cstr(pfx);
+    snprintf(g_hooks.dir_pfx, sizeof(g_hooks.dir_pfx), "%s", s);
+}
+
+void ignore_target(PithValue *pattern)
+{
+    const char *s = pv_to_cstr(pattern);
+    if (*s)
+        strlist_push(&g_hooks.ignore_targets, s);
+}
+
+void keep_target(PithValue *pattern)
+{
+    const char *s = pv_to_cstr(pattern);
+    if (*s)
+        strlist_push(&g_hooks.keep_targets, s);
+}
+
+void strip_cflag(PithValue *pattern)
+{
+    const char *s = pv_to_cstr(pattern);
+    if (*s)
+        strlist_push(&g_hooks.strip_cflags, s);
+}
+
+void inject_cflag(PithValue *target_pattern, PithValue *flag)
+{
+    const char *pat = pv_to_cstr(target_pattern);
+    const char *f = pv_to_cstr(flag);
+    if (!*f)
+        return;
+    if (g_hooks.ninject_cflags < 128) {
+        snprintf(g_hooks.inject_cflags[g_hooks.ninject_cflags].pat,
+                 sizeof(g_hooks.inject_cflags[0].pat), "%s", pat && *pat ? pat : "*");
+        snprintf(g_hooks.inject_cflags[g_hooks.ninject_cflags].val,
+                 sizeof(g_hooks.inject_cflags[0].val), "%s", f);
+        g_hooks.ninject_cflags++;
+    }
+}
+
+void inject_include(PithValue *target_pattern, PithValue *inc)
+{
+    const char *pat = pv_to_cstr(target_pattern);
+    const char *d = pv_to_cstr(inc);
+    if (!*d)
+        return;
+    if (g_hooks.ninject_includes < 128) {
+        snprintf(g_hooks.inject_includes[g_hooks.ninject_includes].pat,
+                 sizeof(g_hooks.inject_includes[0].pat), "%s", pat && *pat ? pat : "*");
+        snprintf(g_hooks.inject_includes[g_hooks.ninject_includes].val,
+                 sizeof(g_hooks.inject_includes[0].val), "%s", d);
+        g_hooks.ninject_includes++;
+    }
+}
+
+void remap_target(PithValue *old_name, PithValue *new_name)
+{
+    const char *from = pv_to_cstr(old_name);
+    const char *to = pv_to_cstr(new_name);
+    if (*from && *to) {
+        strlist_push(&g_hooks.remap_from, from);
+        strlist_push(&g_hooks.remap_to, to);
+    }
+}
+
+void add_command_edge(PithValue *out, PithValue *cmd, PithValue *in)
+{
+    if (!g_hook_ready) {
+        graph_init(&g_hook_graph);
+        g_hook_ready = 1;
+    }
+    const char *o = pv_to_cstr(out);
+    const char *c = pv_to_cstr(cmd);
+    const char *i = pv_to_cstr(in);
+    if (*o && *c)
+        graph_add_command(&g_hook_graph, o, c, i);
+}
+
+int parse_file(PithValue *path)
+{
+    const char *p = pv_to_cstr(path);
+    if (!*p)
+        return 0;
+    if (!g_hook_ready) {
+        graph_init(&g_hook_graph);
+        g_hook_ready = 1;
+    }
+    int rc = decompile_file(p, &g_hook_graph, &g_hook_notes, &g_hook_nnotes);
+    if (rc == 0) {
+        if (g_hooks.proj[0])
+            snprintf(g_hook_graph.proj, sizeof(g_hook_graph.proj), "%s", g_hooks.proj);
+        return 1;
+    }
+    return 0;
+}
+
+int parse_string(PithValue *content)
+{
+    const char *s = pv_to_cstr(content);
+    if (!*s)
+        return 0;
+    if (!g_hook_ready) {
+        graph_init(&g_hook_graph);
+        g_hook_ready = 1;
+    }
+    char *mem = strdup(s);
+    if (!mem)
+        return 0;
+    int rc = 1;
+    const char *pfx = g_hooks.dir_pfx;
+    if (sniff_is_ninja(mem)) {
+        snprintf(g_hook_graph.backend, sizeof(g_hook_graph.backend), "ninja");
+        NDoc doc;
+        memset(&doc, 0, sizeof(doc));
+        parse_ninja(mem, &doc, &g_hook_notes, &g_hook_nnotes);
+        map_ninja(&doc, &g_hook_graph, pfx, &g_hook_notes, &g_hook_nnotes);
+        ninja_doc_free(&doc);
+        rc = (g_hook_graph.count == 0 && g_hook_graph.cmd_count == 0);
+    } else {
+        snprintf(g_hook_graph.backend, sizeof(g_hook_graph.backend), "make");
+        MDoc doc;
+        memset(&doc, 0, sizeof(doc));
+        parse_make(mem, &doc, &g_hook_notes, &g_hook_nnotes);
+        map_make(&doc, &g_hook_graph, pfx, &g_hook_notes, &g_hook_nnotes);
+        mdoc_free(&doc);
+        rc = (g_hook_graph.count == 0 && g_hook_graph.cmd_count == 0);
+    }
+    free(mem);
+    if (g_hooks.proj[0])
+        snprintf(g_hook_graph.proj, sizeof(g_hook_graph.proj), "%s", g_hooks.proj);
+    return rc == 0 ? 1 : 0;
+}
+
+long target_count(void)
+{
+    return (long)g_hook_graph.count;
+}
+
+long command_count(void)
+{
+    return (long)g_hook_graph.cmd_count;
+}
+
+PithValue *get_target_name(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return pithNewString(g_hook_graph.targets[index].name);
+}
+
+long get_target_type(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return -1;
+    return (long)g_hook_graph.targets[index].type;
+}
+
+PithValue *get_target_sources(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return strlist_to_pith(&g_hook_graph.targets[index].sources);
+}
+
+PithValue *get_target_cflags(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return strlist_to_pith(&g_hook_graph.targets[index].cflags);
+}
+
+PithValue *get_target_ldflags(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return strlist_to_pith(&g_hook_graph.targets[index].ldflags);
+}
+
+PithValue *get_target_includes(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return strlist_to_pith(&g_hook_graph.targets[index].includes);
+}
+
+PithValue *get_target_order_deps(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.count)
+        return pithNewString("");
+    return strlist_to_pith(&g_hook_graph.targets[index].order_deps);
+}
+
+PithValue *get_command_output(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.cmd_count)
+        return pithNewString("");
+    return pithNewString(g_hook_graph.commands[index].output);
+}
+
+PithValue *get_command_line(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.cmd_count)
+        return pithNewString("");
+    return pithNewString(g_hook_graph.commands[index].command);
+}
+
+PithValue *get_command_input(long index)
+{
+    if (index < 0 || (size_t)index >= g_hook_graph.cmd_count)
+        return pithNewString("");
+    return pithNewString(g_hook_graph.commands[index].input);
+}
+
+void set_target_type(PithValue *target_name, long type)
+{
+    const char *n = pv_to_cstr(target_name);
+    Target *t = graph_find(&g_hook_graph, n);
+    if (t)
+        t->type = (int)type;
+}
+
+void add_target_source(PithValue *target_name, PithValue *src)
+{
+    const char *n = pv_to_cstr(target_name);
+    const char *s = pv_to_cstr(src);
+    Target *t = graph_find(&g_hook_graph, n);
+    if (t && *s)
+        strlist_push(&t->sources, s);
+}
+
+void remove_target(PithValue *target_name)
+{
+    const char *n = pv_to_cstr(target_name);
+    for (size_t i = 0; i < g_hook_graph.count; i++) {
+        if (strcmp(g_hook_graph.targets[i].name, n) == 0) {
+            strlist_free(&g_hook_graph.targets[i].sources);
+            strlist_free(&g_hook_graph.targets[i].cflags);
+            strlist_free(&g_hook_graph.targets[i].ldflags);
+            strlist_free(&g_hook_graph.targets[i].includes);
+            strlist_free(&g_hook_graph.targets[i].order_deps);
+            for (size_t j = i + 1; j < g_hook_graph.count; j++)
+                g_hook_graph.targets[j - 1] = g_hook_graph.targets[j];
+            g_hook_graph.count--;
+            break;
+        }
+    }
+}
+
+int emit_ninja_file(PithValue *out_path)
+{
+    const char *p = pv_to_cstr(out_path);
+    if (!*p)
+        return 0;
+    const char *cc = g_hooks.cc[0] ? g_hooks.cc : (getenv("CC") ? getenv("CC") : "cc");
+    const char *ar = g_hooks.ar[0] ? g_hooks.ar : (getenv("AR") ? getenv("AR") : "ar");
+    return emit_ninja(&g_hook_graph, cc, ar, p) == 0 ? 1 : 0;
+}
+
+int emit_posix_make_file(PithValue *out_path)
+{
+    const char *p = pv_to_cstr(out_path);
+    if (!*p)
+        return 0;
+    const char *cc = g_hooks.cc[0] ? g_hooks.cc : (getenv("CC") ? getenv("CC") : "cc");
+    const char *ar = g_hooks.ar[0] ? g_hooks.ar : (getenv("AR") ? getenv("AR") : "ar");
+    return emit_makefile(&g_hook_graph, cc, ar, p) == 0 ? 1 : 0;
+}
+
+int emit_thorn_file(PithValue *out_path)
+{
+    const char *p = pv_to_cstr(out_path);
+    if (!*p)
+        return 0;
+    FILE *f = fopen(p, "w");
+    if (!f)
+        return 0;
+    int rc = print_spec(&g_hook_graph, f, (const char **)g_hook_notes, g_hook_nnotes);
+    fclose(f);
+    return rc == 0 ? 1 : 0;
+}
+
+PithValue *to_ninja(void)
+{
+    char tmp_path[] = "/tmp/thorn_ninja_XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd < 0)
+        return pithNewString("");
+    close(fd);
+    const char *cc = g_hooks.cc[0] ? g_hooks.cc : (getenv("CC") ? getenv("CC") : "cc");
+    const char *ar = g_hooks.ar[0] ? g_hooks.ar : (getenv("AR") ? getenv("AR") : "ar");
+    emit_ninja(&g_hook_graph, cc, ar, tmp_path);
+    char *data = read_all(tmp_path);
+    unlink(tmp_path);
+    PithValue *res = pithNewString(data ? data : "");
+    free(data);
+    return res;
+}
+
+PithValue *to_posix_make(void)
+{
+    char tmp_path[] = "/tmp/thorn_make_XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd < 0)
+        return pithNewString("");
+    close(fd);
+    const char *cc = g_hooks.cc[0] ? g_hooks.cc : (getenv("CC") ? getenv("CC") : "cc");
+    const char *ar = g_hooks.ar[0] ? g_hooks.ar : (getenv("AR") ? getenv("AR") : "ar");
+    emit_makefile(&g_hook_graph, cc, ar, tmp_path);
+    char *data = read_all(tmp_path);
+    unlink(tmp_path);
+    PithValue *res = pithNewString(data ? data : "");
+    free(data);
+    return res;
+}
+
+PithValue *to_thorn(void)
+{
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *mf = open_memstream(&buf, &sz);
+    if (!mf)
+        return pithNewString("");
+    print_spec(&g_hook_graph, mf, (const char **)g_hook_notes, g_hook_nnotes);
+    fclose(mf);
+    PithValue *res = pithNewString(buf ? buf : "");
+    free(buf);
+    return res;
+}
+
+int convert(PithValue *in_path, PithValue *out_path, PithValue *format)
+{
+    if (!parse_file(in_path))
+        return 0;
+    const char *fmt = pv_to_cstr(format);
+    if (strcmp(fmt, "ninja") == 0)
+        return emit_ninja_file(out_path);
+    if (strcmp(fmt, "make") == 0 || strcmp(fmt, "posix") == 0 || strcmp(fmt, "posix_make") == 0)
+        return emit_posix_make_file(out_path);
+    if (strcmp(fmt, "thorn") == 0)
+        return emit_thorn_file(out_path);
+    return 0;
 }

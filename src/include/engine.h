@@ -4,7 +4,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include <pith_embed.h>
+struct PithContext;
+typedef struct PithContext PithContext;
 
 #define THORN_VERSION "0.3.0"
 
@@ -83,5 +84,83 @@ int host_register(PithContext *ctx);
 /* Reverse decompilation */
 int decompile_file(const char *path, Graph *g, char ***notes,
                    size_t *nnotes);
+
+/* Hookable decompiler API (usable from C and standalone Pith scripts) */
+struct PithValue;
+typedef struct PithValue PithValue;
+
+void reset(void);
+void set_project(PithValue *name);
+void set_compiler(PithValue *cc);
+void set_ar(PithValue *ar);
+void set_dir_prefix(PithValue *pfx);
+void ignore_target(PithValue *pattern);
+void keep_target(PithValue *pattern);
+void strip_cflag(PithValue *pattern);
+void inject_cflag(PithValue *target_pattern, PithValue *flag);
+void inject_include(PithValue *target_pattern, PithValue *inc);
+void remap_target(PithValue *old_name, PithValue *new_name);
+void add_command_edge(PithValue *out, PithValue *cmd, PithValue *in);
+int parse_file(PithValue *path);
+int parse_string(PithValue *content);
+long target_count(void);
+long command_count(void);
+PithValue *get_target_name(long index);
+long get_target_type(long index);
+PithValue *get_target_sources(long index);
+PithValue *get_target_cflags(long index);
+PithValue *get_target_ldflags(long index);
+PithValue *get_target_includes(long index);
+PithValue *get_target_order_deps(long index);
+PithValue *get_command_output(long index);
+PithValue *get_command_line(long index);
+PithValue *get_command_input(long index);
+void set_target_type(PithValue *target_name, long type);
+void add_target_source(PithValue *target_name, PithValue *src);
+void remove_target(PithValue *target_name);
+int emit_ninja_file(PithValue *out_path);
+int emit_posix_make_file(PithValue *out_path);
+int emit_thorn_file(PithValue *out_path);
+PithValue *to_ninja(void);
+PithValue *to_posix_make(void);
+PithValue *to_thorn(void);
+int convert(PithValue *in_path, PithValue *out_path, PithValue *format);
+
+#define decompile_reset reset
+#define decompile_set_project set_project
+#define decompile_set_compiler set_compiler
+#define decompile_set_ar set_ar
+#define decompile_set_dir_prefix set_dir_prefix
+#define decompile_ignore_target ignore_target
+#define decompile_keep_target keep_target
+#define decompile_strip_cflag strip_cflag
+#define decompile_inject_cflag inject_cflag
+#define decompile_inject_include inject_include
+#define decompile_remap_target remap_target
+#define decompile_add_command_edge add_command_edge
+#define decompile_parse parse_file
+#define decompile_parse_string parse_string
+#define decompile_target_count target_count
+#define decompile_command_count command_count
+#define decompile_get_target_name get_target_name
+#define decompile_get_target_type get_target_type
+#define decompile_get_target_sources get_target_sources
+#define decompile_get_target_cflags get_target_cflags
+#define decompile_get_target_ldflags get_target_ldflags
+#define decompile_get_target_includes get_target_includes
+#define decompile_get_target_order_deps get_target_order_deps
+#define decompile_get_command_output get_command_output
+#define decompile_get_command_line get_command_line
+#define decompile_get_command_input get_command_input
+#define decompile_set_target_type set_target_type
+#define decompile_add_target_source add_target_source
+#define decompile_remove_target remove_target
+#define decompile_emit_ninja emit_ninja_file
+#define decompile_emit_posix_make emit_posix_make_file
+#define decompile_emit_thorn emit_thorn_file
+#define decompile_to_ninja_string to_ninja
+#define decompile_to_posix_make_string to_posix_make
+#define decompile_to_thorn_string to_thorn
+#define decompile_convert convert
 
 #endif /* THORN_ENGINE_H */

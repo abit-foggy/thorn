@@ -380,7 +380,82 @@ grep -q "duplicate order dependency" "$DUP_DIR/warn.log" \
     && ok "duplicate order dependency warning emitted and deduplicated"
 
 # ------------------------------------------------------------------
+# Feature: standalone Pith raw C import and hookable decompiler
+# ------------------------------------------------------------------
+step "feature: standalone pith raw c import and hookable decompiler"
+
+HOOK_DIR="$SCRATCH/hook_test"
+mkdir -p "$HOOK_DIR"
+
+# Run the Linux Kbuild tree converter example script
+if "$ROOT/vendor/pith/pith" run "$ROOT/examples/linux_converter.pi" > "$HOOK_DIR/conv.log" 2>&1; then
+    ok "standalone pith successfully imports src/decompile.c via raw C import"
+else
+    bad "standalone pith failed to import src/decompile.c"
+fi
+
+grep -q "Linux tree conversion complete" "$HOOK_DIR/conv.log" \
+    && ok "linux kbuild converter script runs to completion"
+grep -q "target net_core (static library)" "$HOOK_DIR/conv.log" \
+    && ok "kbuild composite objects (-objs) and remapped targets modeled"
+grep -q -- "-D__KERNEL__" "$HOOK_DIR/conv.log" \
+    && ok "cflag injection applied across converted targets"
+grep -q "include/uapi" "$HOOK_DIR/conv.log" \
+    && ok "include injection applied across converted targets"
+
+# Test build execution of converted outputs
+cat << 'EOF' > "$HOOK_DIR/Makefile.src"
+CC = cc
+demo: main.o util.o
+	$(CC) -o $@ main.o util.o
+main.o: main.c
+	$(CC) -c main.c -o main.o
+util.o: util.c
+	$(CC) -c util.c -o util.o
+EOF
+
+cat << EOF > "$HOOK_DIR/run_convert.pi"
+import "$ROOT/src/decompile.c"
+
+decompile.reset()
+decompile.set_project("hook_built")
+decompile.set_compiler("cc")
+decompile.set_ar("ar")
+decompile.inject_cflag("*", "-Wall")
+
+decompile.parse_file("Makefile.src")
+decompile.emit_ninja_file("build.ninja")
+decompile.emit_posix_make_file("Makefile")
+EOF
+
+cat << 'EOF' > "$HOOK_DIR/main.c"
+extern int answer(void);
+int main(void) { return answer() == 42 ? 0 : 1; }
+EOF
+cat << 'EOF' > "$HOOK_DIR/util.c"
+int answer(void) { return 42; }
+EOF
+
+(cd "$HOOK_DIR" && "$ROOT/vendor/pith/pith" run "run_convert.pi" > /dev/null 2>&1)
+[ -f "$HOOK_DIR/build.ninja" ] && ok "decompile emits build.ninja from standalone pith"
+[ -f "$HOOK_DIR/Makefile" ] && ok "decompile emits Makefile from standalone pith"
+
+if (cd "$HOOK_DIR" && samu > /dev/null 2>&1 && ./demo); then
+    ok "samu builds and executes binary from pith-generated ninja"
+else
+    bad "failed to build or run binary from pith-generated ninja"
+fi
+
+rm -f "$HOOK_DIR/demo" "$HOOK_DIR"/*.o
+if (cd "$HOOK_DIR" && make > /dev/null 2>&1 && ./demo); then
+    ok "make builds and executes binary from pith-generated makefile"
+else
+    bad "failed to build or run binary from pith-generated makefile"
+fi
+
+# ------------------------------------------------------------------
 printf '\n'
 printf 'thorn acceptance: %d passed, %d failed\n' "$PASS" "$FAIL"
 rm -rf "$SCRATCH"
 [ "$FAIL" -eq 0 ]
+

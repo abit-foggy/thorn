@@ -10,7 +10,6 @@
 #include <sys/types.h>
 
 #include <pith.h>
-#include <compiler.h>
 
 #include "include/engine.h"
 

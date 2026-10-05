@@ -49,7 +49,7 @@ $(ART)/engine.o: src/engine.c src/include/engine.h pith-check
 
 $(ART)/decompile.o: src/decompile.c src/include/engine.h pith-check
 	mkdir -p $(ART)
-	$(CC) $(CFLAGS) -I$(PITH_INC) -c src/decompile.c -o $@
+	$(CC) $(CFLAGS) -DTHORN_CORE_BUILD -I$(PITH_INC) -c src/decompile.c -o $@
 
 $(ART)/main.o: src/main.c src/include/engine.h pith-check
 	mkdir -p $(ART)
