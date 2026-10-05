@@ -1,42 +1,3 @@
-/*
- * engine.c - the C99 host engine for thorn, a lean meta-build
- * generator that embeds The Pith Programming Language.
- *
- * A thorn is the sharp spine on the stem of a plant; it grows on the
- * pith. This tool is the sharp point of the pith toolchain: minimal,
- * zero-bloat, deterministic, in the QBE spirit.
- *
- * Architecture (the Lua-in-a-game-engine model):
- *
- *   thorn embeds pith's frontend (libtcc/libqbe/libruntime joined at
- *   link time, see the bootstrap Makefile). At runtime thorn reads
- *   build.thorn, registers its build API as a host namespace
- *   (engine.*) through pith's embed ABI, and evaluates the
- *   spec. The script configures the graph by calling the API
- *   directly through the C ABI; thorn appends an emission epilogue
- *   that calls engine.emit(), which writes a deterministic
- *   build.ninja (samurai/ninja) and a portable Makefile.
- *
- *   Because evaluation may run in-memory (tcc JIT) or through the
- *   temp-executable fallback on hardened kernels, the graph and the
- *   emission both live in this engine: on the fallback the child
- *   process builds the graph in its own copy of this object (linked
- *   from the registered link object) and writes the backends itself.
- *   engine.c therefore contains no main(); the CLI lives in
- *   src/main.c, and this file compiles under the
- *   -D<stem>=c_engine_<stem> renames so the fallback link resolves
- *   every registered symbol.
- *
- * Pith ABI notes:
- *   - string parameters are borrowed PithValue* (NUL-terminated,
- *     copy with strdup when storing)
- *   - int parameters/returns are 32-bit ('w'); pith narrows its
- *     64-bit integers at the boundary
- *   - every API function returns int so pith can call it as a bare
- *     statement or test it with `if`
- *   - zero-parameter functions double as pseudo-constants in pith:
- *     `engine.exe` (bare member access emits the call)
- */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
@@ -52,10 +13,7 @@
 
 #include "include/engine.h"
 
-/* ------------------------------------------------------------------ */
-/* Diagnostics                                                        */
-/* ------------------------------------------------------------------ */
-
+/* Diagnostics */
 void diag(const char *fmt, ...)
 {
     va_list ap;
@@ -67,9 +25,7 @@ void diag(const char *fmt, ...)
     fflush(stderr);
 }
 
-/* ------------------------------------------------------------------ */
-/* Growable string buffer                                             */
-/* ------------------------------------------------------------------ */
+/* Growable string buffer */
 
 typedef struct {
     char *buf;
@@ -112,9 +68,7 @@ static void sb_free(SBuf *b)
     b->len = b->cap = 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Model implementation                                               */
-/* ------------------------------------------------------------------ */
+/* Model implementation */
 
 int strlist_push(StrList *l, const char *s)
 {
@@ -219,9 +173,7 @@ int graph_add_command(Graph *g, const char *out, const char *cmd,
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Path helpers                                                       */
-/* ------------------------------------------------------------------ */
+/* Path helpers */
 
 void join_path(char *out, size_t n, const char *dir,
                const char *name)
@@ -275,9 +227,7 @@ int makedirs(const char *dir)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Whitespace validator                                               */
-/* ------------------------------------------------------------------ */
+/* Whitespace validator */
 
 static int has_whitespace(const char *s)
 {
@@ -290,9 +240,7 @@ static int has_whitespace(const char *s)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Host API (the symbols pith calls)                                  */
-/* ------------------------------------------------------------------ */
+/* Host API implementation */
 
 static Graph g_graph;
 static int g_ready;
@@ -645,9 +593,7 @@ int emit(void)
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Naming helpers                                                     */
-/* ------------------------------------------------------------------ */
+/* Naming helpers */
 
 static int is_c_source(const char *s)
 {
@@ -732,9 +678,7 @@ static void artifact_name(const Target *t, char *out, size_t n)
         snprintf(out, n, "%s", t->name);
 }
 
-/* ------------------------------------------------------------------ */
-/* Ninja emitter                                                      */
-/* ------------------------------------------------------------------ */
+/* Ninja emitter */
 
 int emit_ninja(const Graph *g, const char *cc, const char *ar,
                const char *path)
@@ -864,9 +808,7 @@ int emit_ninja(const Graph *g, const char *cc, const char *ar,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Makefile emitter                                                   */
-/* ------------------------------------------------------------------ */
+/* Makefile emitter */
 
 static void subst_cmd_for_make(const char *in, char *out, size_t n)
 {
@@ -1118,9 +1060,7 @@ int emit_makefile(const Graph *g, const char *cc, const char *ar,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* build.thorn printer (used by thorn decompile)                      */
-/* ------------------------------------------------------------------ */
+/* build.thorn printer */
 
 int print_spec(const Graph *g, FILE *out, const char **notes,
                size_t nnotes)

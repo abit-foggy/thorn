@@ -1,24 +1,3 @@
-/*
- * thorn_decompile.c - the reverse path: ingest an existing build.ninja
- * or Makefile and decompile it into a clean, idiomatic build.thorn.
- *
- * Implemented as a C99 utility, definitively: pith v0.1 has no string
- * toolkit (no length, indexing, splitting, or joining) and no
- * collections, so text ingestion of this shape is not expressible in
- * the language yet. The graph built here is the same model the
- * forward emitters consume, so a decompiled spec regenerates
- * byte-identical backends (see verify.sh roundtrip).
- *
- * Supported (v1):
- *   ninja: variables, rules, build edges (outputs, inputs, | implicit,
- *          || order-only), edge-local cflags/ldflags vars, default,
- *          phony. Edges are classified by their rule commands.
- *   make:  variable assignments, explicit rules with TAB recipes,
- *          %.o: %.c pattern compile rules, $(VAR) expansion, and
- *          -include dependency lines.
- * Everything unmodeled (pools, subninja, custom codegen rules, ...)
- * is reported honestly as a note in the generated build.thorn.
- */
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdarg.h>
@@ -28,9 +7,7 @@
 
 #include "include/engine.h"
 
-/* ------------------------------------------------------------------ */
-/* Notes & diagnostics                                               */
-/* ------------------------------------------------------------------ */
+/* Notes & diagnostics */
 
 
 
@@ -65,9 +42,7 @@ static int tok_push(char ***arr, size_t *n, const char *tok)
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Small text helpers                                                 */
-/* ------------------------------------------------------------------ */
+/* Text helpers */
 
 static char **split_owned(const char *text, size_t *count)
 {
@@ -195,8 +170,7 @@ static const char *strip_pfx(const char *s, const char *pfx)
     return s;
 }
 
-/* The clean target name behind an emitted artifact: prefix stripped,
- * conventional library extensions (.a, .so) removed. */
+/* Clean target name: strip prefix and library extensions */
 static const char *clean_target(const char *raw, const char *pfx,
                                 char *buf, size_t n)
 {
@@ -210,9 +184,7 @@ static const char *clean_target(const char *raw, const char *pfx,
     return buf;
 }
 
-/* ------------------------------------------------------------------ */
-/* Rule classification (shared)                                       */
-/* ------------------------------------------------------------------ */
+/* Rule classification */
 
 enum {
     RC_PHONY = 0,
@@ -257,11 +229,9 @@ static int classify_text(const char *text)
     return rc;
 }
 
-/* ------------------------------------------------------------------ */
-/* Flag harvesting                                                    */
-/* ------------------------------------------------------------------ */
+/* Flag harvesting */
 
-/* "-Iinclude -O2" -> includes + cflags (two-token "-I dir" handled). */
+/* Parse -I includes and compiler flags */
 static void harvest_flags_text(const char *text, Target *t)
 {
     size_t nt;
@@ -278,8 +248,7 @@ static void harvest_flags_text(const char *text, Target *t)
     free_tokens(toks, nt);
 }
 
-/* Residue of a compile command: drop drivers, dep flags, paths and
- * $-temporaries; keep -I and literal flags. */
+/* Extract compile flags from command line */
 static void harvest_cmd_compile_text(const char *text, Target *t)
 {
     size_t nt;
@@ -312,7 +281,7 @@ static void harvest_cmd_compile_text(const char *text, Target *t)
     free_tokens(toks, nt);
 }
 
-/* Residue of a link/archive command: keep -L/-l/-rpath/libraries. */
+/* Extract link flags and archives from command line */
 static void harvest_cmd_link_text(const char *text, Target *t)
 {
     size_t nt;
@@ -336,9 +305,7 @@ static void harvest_cmd_link_text(const char *text, Target *t)
     free_tokens(toks, nt);
 }
 
-/* ------------------------------------------------------------------ */
-/* Ninja ingestion                                                    */
-/* ------------------------------------------------------------------ */
+/* Ninja ingestion */
 
 typedef struct {
     char name[128];
@@ -793,9 +760,7 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
     free(rcls);
 }
 
-/* ------------------------------------------------------------------ */
-/* Makefile ingestion                                                 */
-/* ------------------------------------------------------------------ */
+/* Makefile ingestion */
 
 typedef struct {
     char **vk;
@@ -1426,9 +1391,7 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
     strlist_free(&pat_holder.cflags);
 }
 
-/* ------------------------------------------------------------------ */
-/* Detection & entry                                                  */
-/* ------------------------------------------------------------------ */
+/* Decompile entry point */
 
 static int sniff_is_ninja(const char *mem)
 {

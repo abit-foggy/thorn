@@ -1,21 +1,3 @@
-# thorn bootstrap Makefile - builds out/thorn.
-#
-# thorn embeds pith (the Lua-in-a-game-engine model): the binary
-# carries pith's frontend and evaluates build.thorn at runtime, so
-# ONE thorn serves every project. Prerequisites:
-#
-#   - the pith toolchain built in ../pith (run `make` there)
-#   - a POSIX cc
-#
-# Layout: sources in src/, headers in src/include/, objects and
-# generated backends in out/artifacts/, the binary in out/.
-#
-# src/engine.c compiles under the -D<stem>=c_engine_<stem>
-# renames (the same author-aware mangling pith applies to imported C
-# units) so it doubles as the temp-executable fallback link object:
-# when a hardened kernel blocks in-memory execution, pith links this
-# object into the child process, whose script calls then resolve.
-
 CC = cc
 PITH_ROOT = ../pith
 PITH_INC = $(PITH_ROOT)/include
@@ -23,7 +5,7 @@ PITH_INC = $(PITH_ROOT)/include
 OUT = out
 ART = $(OUT)/artifacts
 
-# the embedded language: pith's frontend objects and libraries
+# Embedded pith frontend objects and libraries
 PITH_FRONT = $(PITH_ROOT)/src/lexer.o $(PITH_ROOT)/src/parser.o \
 	$(PITH_ROOT)/src/gen_qbe.o $(PITH_ROOT)/src/engine_proxy.o \
 	$(PITH_ROOT)/src/pith_embed.o $(PITH_ROOT)/src/tar.o \
@@ -81,7 +63,7 @@ $(OUT)/thorn: $(ART)/main.o $(ART)/engine.o \
 		$(ART)/decompile.o $(PITH_FRONT) $(PITH_LIBS) \
 		-DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -o $@
 
-# stage 2: thorn generates its own backends and rebuilds itself
+# Stage 2 self-hosting
 selfhost: $(OUT)/thorn
 	$(OUT)/thorn --out-dir $(ART)
 	samu -f $(ART)/build.ninja

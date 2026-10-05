@@ -1,26 +1,3 @@
-/*
- * engine.h - internal shared model for the thorn build engine.
- *
- * thorn is a lean meta-build generator in the QBE spirit that embeds
- * The Pith Programming Language (~/pith) the way a game engine embeds
- * a scripting language: the thorn binary carries pith's frontend and
- * evaluates build.thorn at runtime, with the engine's build API
- * registered as a host namespace (engine.*).
- *
- * This header is shared between src/engine.c (graph, host API,
- * emitters), src/main.c (CLI), and src/decompile.c (build.ninja /
- * Makefile ingestion). It is NOT the host-facing ABI; the functions
- * pith calls are the non-static definitions in src/engine.c,
- * compiled under -D<stem>=c_engine_<stem> symbol renames (the same
- * author-aware mangling pith applies to imported C units) so the
- * temp-executable fallback can link them.
- *
- * Identifier discipline: no identifier in these sources may collide
- * with a host API stem (project, backend, exe, static_lib, shared_lib,
- * add_target, add_source, add_cflag, add_ldflag, add_include,
- * add_order_dep, add_command, pkg_config, emit) because the engine
- * is compiled with those -D renames.
- */
 #ifndef THORN_ENGINE_H
 #define THORN_ENGINE_H
 
@@ -31,19 +8,14 @@
 
 #define THORN_VERSION "0.3.0"
 
-/* Target types (the values engine.exe / .static_lib /
- * .shared_lib return to pith as zero-argument pseudo-constants). */
+/* Target types */
 enum {
     THORN_EXE = 1,
     THORN_STATIC_LIB = 2,
     THORN_SHARED_LIB = 3
 };
 
-/* ------------------------------------------------------------------ */
-/* Model                                                              */
-/* ------------------------------------------------------------------ */
-
-/* An append-only, de-duplicating list of owned strings. */
+/* String list */
 typedef struct StrList {
     char **items;
     size_t count;
@@ -52,12 +24,12 @@ typedef struct StrList {
 
 typedef struct Target {
     char name[256];
-    int type;                       /* THORN_EXE / _STATIC_LIB / _SHARED_LIB */
-    StrList sources;                /* .c compiled per-target; others link raw */
+    int type;
+    StrList sources;
     StrList cflags;
     StrList ldflags;
-    StrList includes;               /* -I directories */
-    StrList order_deps;             /* regeneration-order prerequisites */
+    StrList includes;
+    StrList order_deps;
 } Target;
 
 typedef struct Command {
@@ -67,8 +39,8 @@ typedef struct Command {
 } Command;
 
 typedef struct Graph {
-    char proj[256];                 /* project name (thorn_project var) */
-    char backend[32];               /* "ninja", "make", "both", or empty */
+    char proj[256];
+    char backend[32];
     Target *targets;
     size_t count;
     size_t cap;
@@ -84,85 +56,31 @@ Target *graph_add(Graph *g, const char *name, int type);
 int graph_add_command(Graph *g, const char *out, const char *cmd,
                       const char *in);
 
-/* Append a copy of `s`; returns 1 when newly added, 0 when a duplicate. */
 int strlist_push(StrList *l, const char *s);
-/* Append without de-duplication. */
 int strlist_push_force(StrList *l, const char *s);
-/* Free every item, the array, and reset the list. */
 void strlist_free(StrList *l);
 
-/* ------------------------------------------------------------------ */
-/* Diagnostics & path helpers                                         */
-/* ------------------------------------------------------------------ */
-
-/* "thorn: <msg>" on stderr. */
+/* Diagnostics & path helpers */
 void diag(const char *fmt, ...);
-
-/* "<dir>/<name>", or the bare name for ".". */
 void join_path(char *out, size_t n, const char *dir,
                const char *name);
-
-/* The output-name prefix for a backend file: the file's directory
- * with a trailing slash ("" when the file sits in the cwd). */
 void dir_prefix(const char *path, char *prefix, size_t n);
-
-/* mkdir -p (POSIX); 0 on success. */
 int makedirs(const char *dir);
 
-/* ------------------------------------------------------------------ */
-/* Emitters (src/engine.c)                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Both emitters are deterministic (identical graph and environment
- * produce identical bytes) and prefix every OUTPUT name with the
- * directory of `path` (build.ninja / Makefile generated into
- * out/artifacts place their objects and binaries there), while
- * source inputs stay project-root relative: the backends are invoked
- * from the project root (samu -f out/artifacts/build.ninja,
- * make -f out/artifacts/Makefile). Returns 0 on success.
- */
+/* Backend emitters */
 int emit_ninja(const Graph *g, const char *cc, const char *ar,
                const char *path);
 int emit_makefile(const Graph *g, const char *cc, const char *ar,
                   const char *path);
 
-/* ------------------------------------------------------------------ */
-/* build.thorn printer (used by the decompiler)                       */
-/* ------------------------------------------------------------------ */
-
-/* Print an idiomatic top-level build.thorn for `g`. `notes` are
- * appended as trailing comments. Returns 0 on success. */
+/* Spec printer */
 int print_spec(const Graph *g, FILE *out, const char **notes,
                size_t nnotes);
 
-/* ------------------------------------------------------------------ */
-/* Host registration (src/main.c)                                     */
-/* ------------------------------------------------------------------ */
-
-/*
- * Register the full engine.* host namespace on `ctx`: the
- * configuration API plus the emit() trigger. Every function returns
- * an int ('w') so pith can use calls as statements or test them.
- * Lives in the CLI (never linked into the temp-executable fallback
- * child) and references the engine through its c_engine_*
- * symbols. Returns 0 on success.
- */
+/* Host registration */
 int host_register(PithContext *ctx);
 
-/* ------------------------------------------------------------------ */
-/* Reverse decompilation (src/decompile.c)                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Parse `path` (a build.ninja or a Makefile; detected by content)
- * into `g`. Target names carry the backend file's directory prefix
- * when it was generated outside the project root (out/artifacts/);
- * the prefix is stripped so decompiled specs use clean names. On
- * success returns 0, fills `g`, and hands the caller a malloc'd
- * array of malloc'd note strings through `notes` (free each element
- * and the array itself).
- */
+/* Reverse decompilation */
 int decompile_file(const char *path, Graph *g, char ***notes,
                    size_t *nnotes);
 

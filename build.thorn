@@ -1,22 +1,3 @@
-# build.thorn - thorn's own build specification.
-#
-# Read at runtime by out/thorn (embed mode: no per-project binaries).
-# Generate the backends into out/artifacts and build from the root:
-#
-#     ./out/thorn --out-dir out/artifacts
-#     samu -f out/artifacts/build.ninja
-#
-# Two targets:
-#   thorn_core - thorn's own sources under their c_engine_*
-#                symbol renames (the same mangling pith applies to
-#                imported C units), archived for the exe and usable
-#                as the temp-executable fallback link object
-#   thorn      - the executable: pith's frontend objects (the
-#                embedded language) linked with thorn_core
-#
-# Source order in thorn_core matters to single-pass archive linking:
-# main first, then the engine it references, then the decompiler.
-
 engine.project("thorn")
 engine.backend("ninja")
 

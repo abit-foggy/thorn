@@ -1,24 +1,3 @@
-/*
- * main.c - the thorn CLI.
- *
- * thorn embeds pith the way a game engine embeds a scripting
- * language: build.thorn is read and evaluated at runtime (no
- * per-project binaries, no AOT plugin objects), with the engine's
- * build API registered as the engine.* host namespace.
- *
- * This file is deliberately thin: parse the CLI, read the spec,
- * evaluate it with the emission epilogue appended, and relay the
- * script's exit code. The graph, the API, and the emitters all live
- * in src/engine.c, which doubles as the fallback link object
- * (it has no main() of its own, so the temp-executable child that
- * pith's engine builds on JIT-blocked hosts can link it cleanly).
- *
- * Identifier discipline: no identifier here may collide with a host
- * API stem (project, backend, exe, static_lib, shared_lib, add_target,
- * add_source, add_cflag, add_ldflag, add_include, add_order_dep,
- * add_command, pkg_config, emit); this file is compiled WITHOUT the
- * renames and only references the engine through engine.h.
- */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
@@ -32,14 +11,7 @@
 
 #include "include/engine.h"
 
-/*
- * The engine's host API, referenced through its c_engine_*
- * link symbols (the author-aware mangling pith applies to imported C
- * units; the bootstrap compiles src/engine.c under the matching
- * -D renames). Declaring the mangled names keeps this file free of
- * the renames, and keeps the engine object self-contained for the
- * temp-executable fallback child (which links it without pith).
- */
+/* Engine host API symbols */
 extern int c_engine_project(PithValue *name);
 extern int c_engine_backend(PithValue *name);
 extern int c_engine_exe(void);
@@ -56,7 +28,7 @@ extern int c_engine_add_command(PithValue *output, PithValue *command,
 extern int c_engine_pkg_config(PithValue *target, PithValue *pkg);
 extern int c_engine_emit(void);
 
-/* Register the full engine.* host namespace. */
+/* Register engine.* host namespace */
 int host_register(PithContext *ctx)
 {
     static const struct {
@@ -87,10 +59,7 @@ int host_register(PithContext *ctx)
     return 0;
 }
 
-/* The emission epilogue: once the spec finishes configuring, write
- * the backends (engine.emit() reads THORN_OUT_DIR and the
- * THORN_ENGINE selection). A spec that exits early with proc.exit()
- * before finishing configuration skips emission. */
+/* Emission epilogue appended to spec */
 static const char *EMISSION_EPILOGUE =
     "\nif engine.emit() == 0\n    proc.exit(1)\nend\n";
 
@@ -240,20 +209,19 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
         snprintf(path, sizeof(path), ".");
     char cand[8192];
 
-    /* the bootstrap layout: <thorn>/out/artifacts/engine.o */
+    /* Check out/artifacts/engine.o */
     snprintf(cand, sizeof(cand), "%s/artifacts/engine.o", path);
     if (access(cand, R_OK) == 0) {
         pith_register_link_object(ctx, cand);
         return;
     }
-    /* the self-built layout: thorn_core.a beside the binary carries
-     * the engine member */
+    /* Check thorn_core.a beside binary */
     snprintf(cand, sizeof(cand), "%s/thorn_core.a", path);
     if (access(cand, R_OK) == 0) {
         pith_register_link_object(ctx, cand);
         return;
     }
-    /* flat beside the binary */
+    /* Check engine.o beside binary */
     snprintf(cand, sizeof(cand), "%s/engine.o", path);
     pith_register_link_object(ctx, cand);
 }
@@ -262,13 +230,7 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
 #define THORN_RUNTIME_DEFAULT ""
 #endif
 
-/*
- * The temp-executable fallback links pith's runtime archive. Locate
- * it: an explicit PITH_RUNTIME wins, then the path baked at bootstrap
- * time, then the dev layout (pith checked out beside the thorn
- * tree, which covers out/thorn, out/artifacts/thorn, and running
- * from a project subdirectory alike).
- */
+/* Locate and export PITH_RUNTIME if needed */
 static void configure_runtime_env(const char *argv0)
 {
     const char *env = getenv("PITH_RUNTIME");
