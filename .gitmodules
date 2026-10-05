@@ -1,0 +1,5 @@
+[submodule "vendor/pith"]
+	path = vendor/pith
+	url = https://github.com/abit-foggy/pith.git
+	branch = main
+	ignore = dirty

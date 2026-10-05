@@ -250,6 +250,12 @@ static void configure_runtime_env(const char *argv0)
     else
         snprintf(path, sizeof(path), ".");
     char cand[8192];
+    snprintf(cand, sizeof(cand), "%s/../vendor/pith/runtime/libruntime.a",
+             path);
+    if (access(cand, F_OK) == 0) {
+        setenv("PITH_RUNTIME", cand, 1);
+        return;
+    }
     snprintf(cand, sizeof(cand), "%s/../../pith/runtime/libruntime.a",
              path);
     if (access(cand, F_OK) == 0)

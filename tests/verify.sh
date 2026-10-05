@@ -20,7 +20,13 @@
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PITH_ROOT=$(cd "$ROOT/../pith" && pwd)
+if [ -d "$ROOT/vendor/pith" ]; then
+    PITH_ROOT="$ROOT/vendor/pith"
+elif [ -d "$ROOT/../pith" ]; then
+    PITH_ROOT=$(cd "$ROOT/../pith" && pwd)
+else
+    PITH_ROOT=""
+fi
 SCRATCH=$(mktemp -d /tmp/opencode/thorn-verify.XXXXXX)
 
 PASS=0
@@ -263,6 +269,115 @@ else
 fi
 grep -q "contains whitespace" "$WS_DIR/err.log" \
     && ok "whitespace rejection diagnostic reported"
+
+# ------------------------------------------------------------------
+step "feature: pith error diagnostic output format"
+grep -q "^error: " "$WS_DIR/err.log" \
+    && ok "errors formatted cleanly using pith diagnostic style"
+
+# ------------------------------------------------------------------
+step "feature: duplicate and contradicting entry validation"
+DUP_DIR="$SCRATCH/dup_test"
+mkdir -p "$DUP_DIR"
+
+# Contradicting backend
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("dup_demo")
+engine.backend("ninja")
+engine.backend("make")
+EOF
+if (cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/err.log"); then
+    bad "expected failure on contradicting backend"
+else
+    ok "rejects contradicting backend"
+fi
+grep -q "contradicting backend" "$DUP_DIR/err.log" \
+    && ok "contradicting backend diagnostic reported"
+
+# Contradicting project name
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("proj_one")
+engine.backend("ninja")
+engine.project("proj_two")
+EOF
+if (cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/err.log"); then
+    bad "expected failure on contradicting project"
+else
+    ok "rejects contradicting project name"
+fi
+grep -q "contradicting project name" "$DUP_DIR/err.log" \
+    && ok "contradicting project diagnostic reported"
+
+# Contradicting target type
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("type_demo")
+engine.backend("ninja")
+engine.add_target("app", engine.exe)
+engine.add_target("app", engine.static_lib)
+EOF
+if (cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/err.log"); then
+    bad "expected failure on contradicting target type"
+else
+    ok "rejects contradicting target type"
+fi
+grep -q "contradicting type for target" "$DUP_DIR/err.log" \
+    && ok "contradicting target type diagnostic reported"
+
+# Contradicting cflag (-O2 vs -O0)
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("flag_demo")
+engine.backend("ninja")
+engine.add_target("app", engine.exe)
+engine.add_cflag("app", "-O2")
+engine.add_cflag("app", "-O0")
+EOF
+if (cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/err.log"); then
+    bad "expected failure on contradicting cflag"
+else
+    ok "rejects contradicting cflag"
+fi
+grep -q "contradicting flag" "$DUP_DIR/err.log" \
+    && ok "contradicting cflag diagnostic reported"
+
+# Target / custom command conflict
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("cmd_conflict")
+engine.backend("ninja")
+engine.add_target("output_item", engine.exe)
+engine.add_command("output_item", "echo hello > $out", "")
+EOF
+if (cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/err.log"); then
+    bad "expected failure when custom command conflicts with target"
+else
+    ok "rejects custom command conflicting with existing target"
+fi
+grep -q "conflicts with existing target" "$DUP_DIR/err.log" \
+    && ok "command/target conflict diagnostic reported"
+
+# Duplicate and duplicate warning checks
+cat << 'EOF' > "$DUP_DIR/build.thorn"
+engine.project("warn_demo")
+engine.backend("ninja")
+engine.add_target("demo", engine.exe)
+engine.add_source("demo", "main.c")
+engine.add_source("demo", "main.c")
+engine.add_cflag("demo", "-Wall")
+engine.add_cflag("demo", "-Wall")
+engine.add_include("demo", "include")
+engine.add_include("demo", "include")
+engine.add_order_dep("demo", "dep.h")
+engine.add_order_dep("demo", "dep.h")
+EOF
+printf 'int main(void) { return 0; }\n' > "$DUP_DIR/main.c"
+(cd "$DUP_DIR" && "$ROOT/out/thorn" 2>"$DUP_DIR/warn.log")
+grep -q "duplicate source" "$DUP_DIR/warn.log" \
+    && ok "duplicate source warning emitted and deduplicated"
+grep -q "duplicate cflag" "$DUP_DIR/warn.log" \
+    && ok "duplicate cflag warning emitted and deduplicated"
+grep -q "duplicate include" "$DUP_DIR/warn.log" \
+    && ok "duplicate include warning emitted and deduplicated"
+grep -q "duplicate order dependency" "$DUP_DIR/warn.log" \
+    && ok "duplicate order dependency warning emitted and deduplicated"
 
 # ------------------------------------------------------------------
 printf '\n'

@@ -10,18 +10,43 @@
 #include <sys/types.h>
 
 #include <pith.h>
+#include <compiler.h>
 
 #include "include/engine.h"
 
 /* Diagnostics */
+__attribute__((weak))
+void pith_emit_diagnostic(const char *severity, const char *message,
+                          const char *filepath, const char *source,
+                          size_t line, size_t col, size_t span);
+
+static int g_errors = 0;
+
 void diag(const char *fmt, ...)
 {
+    char buf[2048];
     va_list ap;
-    fputs("thorn: ", stderr);
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
+
+    const char *sev = "error";
+    const char *msg = buf;
+    if (strncmp(buf, "warning: ", 9) == 0) {
+        sev = "warning";
+        msg = buf + 9;
+    } else if (strncmp(buf, "error: ", 7) == 0) {
+        sev = "error";
+        msg = buf + 7;
+    }
+
+    if (strcmp(sev, "error") == 0)
+        g_errors++;
+
+    if (pith_emit_diagnostic)
+        pith_emit_diagnostic(sev, msg, NULL, NULL, 0, 0, 0);
+    else
+        fprintf(stderr, "%s: %s\n", sev, msg);
     fflush(stderr);
 }
 
@@ -107,7 +132,7 @@ void strlist_free(StrList *l)
 void graph_init(Graph *g)
 {
     memset(g, 0, sizeof(*g));
-    snprintf(g->proj, sizeof(g->proj), "project");
+    g_errors = 0;
 }
 
 void graph_free(Graph *g)
@@ -268,6 +293,25 @@ static Target *want_target(const char *api, PithValue *name)
     return t;
 }
 
+static const char *find_contradicting_cflag(const StrList *list, const char *flag)
+{
+    if (strncmp(flag, "-std=", 5) == 0) {
+        for (size_t i = 0; i < list->count; i++) {
+            if (strncmp(list->items[i], "-std=", 5) == 0 &&
+                strcmp(list->items[i], flag) != 0)
+                return list->items[i];
+        }
+    } else if (strncmp(flag, "-O", 2) == 0 && strlen(flag) <= 7) {
+        for (size_t i = 0; i < list->count; i++) {
+            if (strncmp(list->items[i], "-O", 2) == 0 &&
+                strlen(list->items[i]) <= 7 &&
+                strcmp(list->items[i], flag) != 0)
+                return list->items[i];
+        }
+    }
+    return NULL;
+}
+
 int project(PithValue *name)
 {
     ensure_graph();
@@ -279,6 +323,15 @@ int project(PithValue *name)
     if (has_whitespace(n)) {
         diag("project(): name `%s` contains whitespace", n);
         return 0;
+    }
+    if (g_graph.proj[0]) {
+        if (strcmp(g_graph.proj, n) != 0) {
+            diag("project(): contradicting project name `%s` (already set to `%s`)",
+                 n, g_graph.proj);
+            return 0;
+        }
+        diag("warning: duplicate project `%s` skipped", n);
+        return 1;
     }
     snprintf(g_graph.proj, sizeof(g_graph.proj), "%s", n);
     return 1;
@@ -295,6 +348,15 @@ int backend(PithValue *name)
     if (strcmp(b, "ninja") != 0 && strcmp(b, "make") != 0 && strcmp(b, "both") != 0) {
         diag("backend(): unknown backend `%s` (expected \"ninja\", \"make\", or \"both\")", b);
         return 0;
+    }
+    if (g_graph.backend[0]) {
+        if (strcmp(g_graph.backend, b) != 0) {
+            diag("backend(): contradicting backend `%s` (already set to `%s`)",
+                 b, g_graph.backend);
+            return 0;
+        }
+        diag("warning: duplicate backend `%s` skipped", b);
+        return 1;
     }
     snprintf(g_graph.backend, sizeof(g_graph.backend), "%s", b);
     return 1;
@@ -325,9 +387,20 @@ int add_target(PithValue *name, int type)
         diag("add_target(): target name `%s` contains whitespace", n);
         return 0;
     }
-    if (graph_find(&g_graph, n)) {
+    Target *existing = graph_find(&g_graph, n);
+    if (existing) {
+        if (existing->type != type) {
+            diag("add_target(): contradicting type for target `%s`", n);
+            return 0;
+        }
         diag("add_target(): duplicate target `%s`", n);
         return 0;
+    }
+    for (size_t i = 0; i < g_graph.cmd_count; i++) {
+        if (strcmp(g_graph.commands[i].output, n) == 0) {
+            diag("add_target(): target `%s` conflicts with custom command output", n);
+            return 0;
+        }
     }
     if (!graph_add(&g_graph, n, type)) {
         diag("add_target(): out of memory for `%s`", n);
@@ -372,7 +445,17 @@ int add_cflag(PithValue *target, PithValue *flag)
         diag("add_cflag(): flag `%s` contains whitespace", f);
         return 0;
     }
-    strlist_push(&t->cflags, f);
+    const char *conflict = find_contradicting_cflag(&t->cflags, f);
+    if (conflict) {
+        diag("add_cflag(): contradicting flag `%s` on target `%s` (already has `%s`)",
+             f, t->name, conflict);
+        return 0;
+    }
+    if (!strlist_push(&t->cflags, f)) {
+        diag("warning: duplicate cflag `%s` on target `%s` skipped",
+             f, t->name);
+        return 1;
+    }
     return 1;
 }
 
@@ -390,7 +473,11 @@ int add_ldflag(PithValue *target, PithValue *flag)
         diag("add_ldflag(): flag `%s` contains whitespace", f);
         return 0;
     }
-    strlist_push(&t->ldflags, f);
+    if (!strlist_push(&t->ldflags, f)) {
+        diag("warning: duplicate ldflag `%s` on target `%s` skipped",
+             f, t->name);
+        return 1;
+    }
     return 1;
 }
 
@@ -408,7 +495,11 @@ int add_include(PithValue *target, PithValue *dir)
         diag("add_include(): directory `%s` contains whitespace", d);
         return 0;
     }
-    strlist_push(&t->includes, d);
+    if (!strlist_push(&t->includes, d)) {
+        diag("warning: duplicate include `%s` on target `%s` skipped",
+             d, t->name);
+        return 1;
+    }
     return 1;
 }
 
@@ -426,7 +517,11 @@ int add_order_dep(PithValue *target, PithValue *prereq)
         diag("add_order_dep(): prerequisite `%s` contains whitespace", p);
         return 0;
     }
-    strlist_push(&t->order_deps, p);
+    if (!strlist_push(&t->order_deps, p)) {
+        diag("warning: duplicate order dependency `%s` on target `%s` skipped",
+             p, t->name);
+        return 1;
+    }
     return 1;
 }
 
@@ -451,6 +546,22 @@ int add_command(PithValue *output, PithValue *command, PithValue *input)
     if (in[0] && has_whitespace(in)) {
         diag("add_command(): input `%s` contains whitespace", in);
         return 0;
+    }
+    if (graph_find(&g_graph, out)) {
+        diag("add_command(): output `%s` conflicts with existing target", out);
+        return 0;
+    }
+    for (size_t i = 0; i < g_graph.cmd_count; i++) {
+        if (strcmp(g_graph.commands[i].output, out) == 0) {
+            if (strcmp(g_graph.commands[i].command, cmd) == 0 &&
+                strcmp(g_graph.commands[i].input, in) == 0) {
+                diag("warning: duplicate command for output `%s` skipped", out);
+                return 1;
+            } else {
+                diag("add_command(): contradicting command for output `%s`", out);
+                return 0;
+            }
+        }
     }
     if (!graph_add_command(&g_graph, out, cmd, in)) {
         diag("add_command(): out of memory");
@@ -512,6 +623,11 @@ int pkg_config(PithValue *target, PithValue *pkg)
 int emit(void)
 {
     ensure_graph();
+    if (g_errors > 0)
+        return 0;
+
+    if (!g_graph.proj[0])
+        snprintf(g_graph.proj, sizeof(g_graph.proj), "project");
 
     const char *dir = getenv("THORN_OUT_DIR");
     if (!dir || !*dir)

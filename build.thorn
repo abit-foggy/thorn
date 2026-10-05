@@ -1,15 +1,22 @@
+# Project and backend configuration
 engine.project("thorn")
 engine.backend("ninja")
 
+# thorn_core static library
 engine.add_target("thorn_core", engine.static_lib)
+
+# thorn_core sources
 engine.add_source("thorn_core", "src/main.c")
 engine.add_source("thorn_core", "src/engine.c")
 engine.add_source("thorn_core", "src/decompile.c")
+
+# thorn_core flags and ABI renames
 engine.add_cflag("thorn_core", "-std=c99")
 engine.add_cflag("thorn_core", "-O2")
 engine.add_cflag("thorn_core", "-Wall")
 engine.add_cflag("thorn_core", "-Wextra")
 engine.add_cflag("thorn_core", "-Wno-unused-parameter")
+engine.add_cflag("thorn_core", "-D_POSIX_C_SOURCE=200809L")
 engine.add_cflag("thorn_core", "-D_DEFAULT_SOURCE")
 engine.add_cflag("thorn_core", "-Dproject=c_engine_project")
 engine.add_cflag("thorn_core", "-Dbackend=c_engine_backend")
@@ -25,17 +32,24 @@ engine.add_cflag("thorn_core", "-Dadd_order_dep=c_engine_add_order_dep")
 engine.add_cflag("thorn_core", "-Dadd_command=c_engine_add_command")
 engine.add_cflag("thorn_core", "-Dpkg_config=c_engine_pkg_config")
 engine.add_cflag("thorn_core", "-Demit=c_engine_emit")
-engine.add_include("thorn_core", "../pith/include")
 
+# thorn_core includes
+engine.add_include("thorn_core", "vendor/pith/include")
+
+# thorn executable target
 engine.add_target("thorn", engine.exe)
-engine.add_source("thorn", "../pith/src/lexer.c")
-engine.add_source("thorn", "../pith/src/parser.c")
-engine.add_source("thorn", "../pith/src/gen_qbe.c")
-engine.add_source("thorn", "../pith/src/engine_proxy.c")
-engine.add_source("thorn", "../pith/src/pith_embed.c")
-engine.add_source("thorn", "../pith/src/tar.c")
-engine.add_source("thorn", "../pith/src/config.c")
-engine.add_source("thorn", "../pith/src/cffi.c")
+
+# Embedded pith frontend sources
+engine.add_source("thorn", "vendor/pith/src/lexer.c")
+engine.add_source("thorn", "vendor/pith/src/parser.c")
+engine.add_source("thorn", "vendor/pith/src/gen_qbe.c")
+engine.add_source("thorn", "vendor/pith/src/engine_proxy.c")
+engine.add_source("thorn", "vendor/pith/src/pith_embed.c")
+engine.add_source("thorn", "vendor/pith/src/tar.c")
+engine.add_source("thorn", "vendor/pith/src/config.c")
+engine.add_source("thorn", "vendor/pith/src/cffi.c")
+
+# thorn compiler flags
 engine.add_cflag("thorn", "-std=c99")
 engine.add_cflag("thorn", "-O2")
 engine.add_cflag("thorn", "-Wall")
@@ -45,12 +59,18 @@ engine.add_cflag("thorn", "-D_POSIX_C_SOURCE=200809L")
 engine.add_cflag("thorn", "-D_DEFAULT_SOURCE")
 engine.add_cflag("thorn", "-DPITH_HAVE_LIBTCC=1")
 engine.add_cflag("thorn", "-DPITH_HAVE_LIBQBE=1")
-engine.add_include("thorn", "../pith/include")
-engine.add_include("thorn", "../pith/vendor/tcc")
-engine.add_include("thorn", "../pith/vendor/qbe")
+
+# thorn includes
+engine.add_include("thorn", "vendor/pith/include")
+engine.add_include("thorn", "vendor/pith/vendor/tcc")
+engine.add_include("thorn", "vendor/pith/vendor/qbe")
+
+# thorn link flags and dependencies
 engine.add_ldflag("thorn", "out/artifacts/thorn_core.a")
-engine.add_ldflag("thorn", "../pith/vendor/qbe/libqbe.a")
-engine.add_ldflag("thorn", "../pith/vendor/tcc/libtcc.a")
+engine.add_ldflag("thorn", "vendor/pith/vendor/qbe/libqbe.a")
+engine.add_ldflag("thorn", "vendor/pith/vendor/tcc/libtcc.a")
 engine.add_ldflag("thorn", "-ldl")
-engine.add_ldflag("thorn", "../pith/runtime/libruntime.a")
+engine.add_ldflag("thorn", "vendor/pith/runtime/libruntime.a")
+
+# Target order dependencies
 engine.add_order_dep("thorn", "out/artifacts/thorn_core.a")

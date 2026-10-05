@@ -157,9 +157,7 @@ static char *swap_ext_dup(const char *path, char newext)
     return s;
 }
 
-/* Strip a leading directory prefix ("" = nothing to do). Used to
- * clean target names from backends thorn generated into --out-dir:
- * "out/artifacts/thorn" decompiles to the target "thorn". */
+/* Strip leading directory prefix from target name */
 static const char *strip_pfx(const char *s, const char *pfx)
 {
     if (pfx && *pfx) {
@@ -855,9 +853,7 @@ static void mdoc_free(MDoc *d)
     memset(d, 0, sizeof(*d));
 }
 
-/* Expand $(VAR) references using the parsed variables; unknown or
- * automatic references stay verbatim ($-words are skipped by the
- * harvesting tokenizers). */
+/* Expand $(VAR) references using parsed variables */
 static char *str_expand(const char *in, const MVars *v)
 {
     size_t cap = strlen(in) * 2 + 64, len = 0;

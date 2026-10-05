@@ -1,5 +1,5 @@
 CC = cc
-PITH_ROOT = ../pith
+PITH_ROOT ?= $(shell if [ -d vendor/pith ]; then echo "vendor/pith"; else echo "../pith"; fi)
 PITH_INC = $(PITH_ROOT)/include
 
 OUT = out
@@ -37,10 +37,10 @@ all: $(OUT)/thorn
 
 pith-check:
 	@test -x $(PITH_ROOT)/pith || { \
-		echo "thorn: $(PITH_ROOT)/pith is missing - run 'make' there first"; \
+		echo "error: $(PITH_ROOT)/pith is missing - run 'make' there first"; \
 		exit 1; }
 	@test -f $(PITH_ROOT)/runtime/libruntime.a || { \
-		echo "thorn: $(PITH_ROOT)/runtime/libruntime.a is missing"; \
+		echo "error: $(PITH_ROOT)/runtime/libruntime.a is missing"; \
 		exit 1; }
 
 $(ART)/engine.o: src/engine.c src/include/engine.h pith-check
