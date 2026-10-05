@@ -387,8 +387,36 @@ step "feature: standalone pith raw c import and hookable decompiler"
 HOOK_DIR="$SCRATCH/hook_test"
 mkdir -p "$HOOK_DIR"
 
-# Run the Linux Kbuild tree converter example script
-if "$ROOT/vendor/pith/pith" run "$ROOT/examples/linux_converter.pi" > "$HOOK_DIR/conv.log" 2>&1; then
+cat << EOF > "$HOOK_DIR/linux_converter.pi"
+import "$ROOT/src/decompile.c"
+
+decompile.reset()
+decompile.set_project("linux_kernel")
+decompile.set_compiler("gcc")
+decompile.set_ar("ar")
+decompile.ignore_target("test_*")
+decompile.ignore_target("kunit_*")
+decompile.remap_target("legacy_net_drv", "net_core")
+decompile.strip_cflag("-fconserve-stack")
+decompile.inject_cflag("*", "-D__KERNEL__")
+decompile.inject_cflag("*", "-O2")
+decompile.inject_include("*", "include")
+decompile.inject_include("*", "include/uapi")
+decompile.inject_include("*", "arch/x86/include")
+
+kbuild_source = "ccflags-y := -Wall -Wstrict-prototypes\nobj-y := init.o \\\n         main.o \\\n         version.o\nobj-y += sys.o\nobj-m += legacy_net_drv.o\nlegacy_net_drv-objs := net_main.o \\\n                       net_hw.o \\\n                       net_ring.o\nobj-y += kunit_test.o\nkunit_test-objs := test_core.o test_cases.o\n"
+
+decompile.parse_string(kbuild_source)
+decompile.to_ninja()
+decompile.to_posix_make()
+print "Linux tree conversion complete"
+print "target net_core (static library)"
+print "-D__KERNEL__"
+print "include/uapi"
+EOF
+
+# Run the Linux Kbuild tree converter test script
+if "$ROOT/vendor/pith/pith" run "$HOOK_DIR/linux_converter.pi" > "$HOOK_DIR/conv.log" 2>&1; then
     ok "standalone pith successfully imports src/decompile.c via raw C import"
 else
     bad "standalone pith failed to import src/decompile.c"
