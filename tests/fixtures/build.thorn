@@ -1,0 +1,13 @@
+# build.thorn - a small multi-file C project fixture.
+
+engine.project("demo")
+engine.backend("both")
+
+engine.add_target("demo_app", engine.exe)
+engine.add_source("demo_app", "main.c")
+engine.add_source("demo_app", "util.c")
+engine.add_include("demo_app", ".")
+engine.add_cflag("demo_app", "-O2")
+engine.add_cflag("demo_app", "-Wall")
+engine.add_cflag("demo_app", "-Wextra")
+engine.add_ldflag("demo_app", "-lm")

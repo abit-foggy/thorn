@@ -1,23 +1,23 @@
 /*
- * thorn_main.c - the thorn CLI.
+ * main.c - the thorn CLI.
  *
  * thorn embeds pith the way a game engine embeds a scripting
  * language: build.thorn is read and evaluated at runtime (no
  * per-project binaries, no AOT plugin objects), with the engine's
- * build API registered as the thorn_engine.* host namespace.
+ * build API registered as the engine.* host namespace.
  *
  * This file is deliberately thin: parse the CLI, read the spec,
  * evaluate it with the emission epilogue appended, and relay the
  * script's exit code. The graph, the API, and the emitters all live
- * in src/thorn_engine.c, which doubles as the fallback link object
+ * in src/engine.c, which doubles as the fallback link object
  * (it has no main() of its own, so the temp-executable child that
  * pith's engine builds on JIT-blocked hosts can link it cleanly).
  *
  * Identifier discipline: no identifier here may collide with a host
- * API stem (project, exe, static_lib, shared_lib, add_target,
+ * API stem (project, backend, exe, static_lib, shared_lib, add_target,
  * add_source, add_cflag, add_ldflag, add_include, add_order_dep,
- * pkg_config, emit); this file is compiled WITHOUT the renames and
- * only references the engine through thorn_engine.h.
+ * add_command, pkg_config, emit); this file is compiled WITHOUT the
+ * renames and only references the engine through engine.h.
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
@@ -30,53 +30,57 @@
 #include <pith.h>
 #include <pith_embed.h>
 
-#include "include/thorn_engine.h"
+#include "include/engine.h"
 
 /*
- * The engine's host API, referenced through its c_thorn_engine_*
+ * The engine's host API, referenced through its c_engine_*
  * link symbols (the author-aware mangling pith applies to imported C
- * units; the bootstrap compiles src/thorn_engine.c under the matching
+ * units; the bootstrap compiles src/engine.c under the matching
  * -D renames). Declaring the mangled names keeps this file free of
  * the renames, and keeps the engine object self-contained for the
  * temp-executable fallback child (which links it without pith).
  */
-extern int c_thorn_engine_project(PithValue *name);
-extern int c_thorn_engine_exe(void);
-extern int c_thorn_engine_static_lib(void);
-extern int c_thorn_engine_shared_lib(void);
-extern int c_thorn_engine_add_target(PithValue *name, int type);
-extern int c_thorn_engine_add_source(PithValue *target, PithValue *src);
-extern int c_thorn_engine_add_cflag(PithValue *target, PithValue *flag);
-extern int c_thorn_engine_add_ldflag(PithValue *target, PithValue *flag);
-extern int c_thorn_engine_add_include(PithValue *target, PithValue *dir);
-extern int c_thorn_engine_add_order_dep(PithValue *target,
-                                        PithValue *prereq);
-extern int c_thorn_engine_pkg_config(PithValue *target, PithValue *pkg);
-extern int c_thorn_engine_emit(void);
+extern int c_engine_project(PithValue *name);
+extern int c_engine_backend(PithValue *name);
+extern int c_engine_exe(void);
+extern int c_engine_static_lib(void);
+extern int c_engine_shared_lib(void);
+extern int c_engine_add_target(PithValue *name, int type);
+extern int c_engine_add_source(PithValue *target, PithValue *src);
+extern int c_engine_add_cflag(PithValue *target, PithValue *flag);
+extern int c_engine_add_ldflag(PithValue *target, PithValue *flag);
+extern int c_engine_add_include(PithValue *target, PithValue *dir);
+extern int c_engine_add_order_dep(PithValue *target, PithValue *prereq);
+extern int c_engine_add_command(PithValue *output, PithValue *command,
+                                PithValue *input);
+extern int c_engine_pkg_config(PithValue *target, PithValue *pkg);
+extern int c_engine_emit(void);
 
-/* Register the full thorn_engine.* host namespace. */
-int thorn_host_register(PithContext *ctx)
+/* Register the full engine.* host namespace. */
+int host_register(PithContext *ctx)
 {
     static const struct {
         const char *name;
         void *fn;
         const char *params;   /* 'p' = PithValue*, 'w' = int */
     } api[] = {
-        { "project",       c_thorn_engine_project,       "p"  },
-        { "exe",           c_thorn_engine_exe,           ""   },
-        { "static_lib",    c_thorn_engine_static_lib,    ""   },
-        { "shared_lib",    c_thorn_engine_shared_lib,    ""   },
-        { "add_target",    c_thorn_engine_add_target,    "pw" },
-        { "add_source",    c_thorn_engine_add_source,   "pp" },
-        { "add_cflag",     c_thorn_engine_add_cflag,     "pp" },
-        { "add_ldflag",    c_thorn_engine_add_ldflag,    "pp" },
-        { "add_include",   c_thorn_engine_add_include,   "pp" },
-        { "add_order_dep", c_thorn_engine_add_order_dep, "pp" },
-        { "pkg_config",    c_thorn_engine_pkg_config,    "pp" },
-        { "emit",          c_thorn_engine_emit,          ""   },
+        { "project",       c_engine_project,       "p"   },
+        { "backend",       c_engine_backend,       "p"   },
+        { "exe",           c_engine_exe,           ""    },
+        { "static_lib",    c_engine_static_lib,    ""    },
+        { "shared_lib",    c_engine_shared_lib,    ""    },
+        { "add_target",    c_engine_add_target,    "pw"  },
+        { "add_source",    c_engine_add_source,    "pp"  },
+        { "add_cflag",     c_engine_add_cflag,     "pp"  },
+        { "add_ldflag",    c_engine_add_ldflag,    "pp"  },
+        { "add_include",   c_engine_add_include,   "pp"  },
+        { "add_order_dep", c_engine_add_order_dep, "pp"  },
+        { "add_command",   c_engine_add_command,   "ppp" },
+        { "pkg_config",    c_engine_pkg_config,    "pp"  },
+        { "emit",          c_engine_emit,          ""    },
     };
     for (size_t i = 0; i < sizeof(api) / sizeof(api[0]); i++)
-        if (pith_register_ns_fn(ctx, "thorn_engine", api[i].name,
+        if (pith_register_ns_fn(ctx, "engine", api[i].name,
                                 api[i].fn, 'w',
                                 api[i].params) != 0)
             return -1;
@@ -84,12 +88,11 @@ int thorn_host_register(PithContext *ctx)
 }
 
 /* The emission epilogue: once the spec finishes configuring, write
- * the backends (thorn_engine.emit() reads THORN_OUT_DIR and the
- * THORN_EMIT_* selection the CLI exported). A spec that exits early
- * with proc.exit() before finishing configuration skips emission,
- * which is the correct behavior for an aborted configure. */
+ * the backends (engine.emit() reads THORN_OUT_DIR and the
+ * THORN_ENGINE selection). A spec that exits early with proc.exit()
+ * before finishing configuration skips emission. */
 static const char *EMISSION_EPILOGUE =
-    "\nif thorn_engine.emit() == 0\n    proc.exit(1)\nend\n";
+    "\nif engine.emit() == 0\n    proc.exit(1)\nend\n";
 
 static char *read_all(const char *path)
 {
@@ -125,19 +128,52 @@ static void usage(void)
            "USAGE:\n"
            "    thorn                       evaluate build.thorn, emit "
            "backends\n"
-           "    thorn build [-f spec] [--out-dir dir] [--ninja|--make]\n"
+           "    thorn build [-f spec] [--out-dir dir] [--engine ninja|make|both]\n"
+           "                [--compiler cc] [--ar ar]\n"
            "    thorn decompile <build.ninja|Makefile> [-o out.thorn]\n"
            "    thorn help | version\n\n"
            "The specification (build.thorn, or thorn.pith) is a pith "
            "script\nevaluated at runtime; the engine API is the "
-           "thorn_engine.* host\nnamespace. Backends are written to "
+           "engine.* host\nnamespace. Backends are written to "
            "--out-dir (default: cwd):\n\n"
            "    thorn --out-dir out/artifacts\n"
            "    samu -f out/artifacts/build.ninja\n"
            "    make -f out/artifacts/Makefile\n\n"
-           "CC/AR override the baked toolchain; THORN_ENGINE_OBJ "
-           "overrides the\nfallback link object (default: "
-           "<thorn-dir>/artifacts/thorn_engine.o).\n");
+           "Toolchain selection:\n"
+           "    --compiler <clang|gcc|cc|tcc|...>\n"
+           "    --ar <ar|llvm-ar|...>\n"
+           "Precedence: flag > CC/AR env > cc/ar (validated in PATH).\n\n"
+           "Engine selection:\n"
+           "    engine.backend(\"ninja\") in spec, or --engine <ninja|make|both>\n"
+           "(flag overrides spec).\n");
+}
+
+static int validate_executable(const char *name)
+{
+    if (!name || !*name)
+        return 0;
+    if (strchr(name, '/'))
+        return access(name, X_OK) == 0;
+    const char *path_env = getenv("PATH");
+    if (!path_env)
+        path_env = "/usr/bin:/bin";
+    char *copy = strdup(path_env);
+    if (!copy)
+        return 0;
+    char *saveptr = NULL;
+    char *dir = strtok_r(copy, ":", &saveptr);
+    int found = 0;
+    while (dir) {
+        char cand[4096];
+        snprintf(cand, sizeof(cand), "%s/%s", dir, name);
+        if (access(cand, X_OK) == 0) {
+            found = 1;
+            break;
+        }
+        dir = strtok_r(NULL, ":", &saveptr);
+    }
+    free(copy);
+    return found;
 }
 
 static int cmd_decompile(const char *in, const char *out)
@@ -147,28 +183,35 @@ static int cmd_decompile(const char *in, const char *out)
     char **notes = NULL;
     size_t nnotes = 0;
 
-    if (thorn_decompile_file(in, &g, &notes, &nnotes) != 0) {
+    if (decompile_file(in, &g, &notes, &nnotes) != 0) {
         graph_free(&g);
         return 1;
     }
-    if (g.count == 0) {
-        thorn_diag("no buildable targets found in %s", in);
+    if (g.count == 0 && g.cmd_count == 0) {
+        diag("no buildable targets or commands found in %s", in);
         graph_free(&g);
         return 1;
     }
 
     FILE *f = fopen(out, "w");
     if (!f) {
-        thorn_diag("cannot write %s", out);
+        diag("cannot write %s", out);
         graph_free(&g);
         return 1;
     }
-    thorn_print_spec(&g, f, (const char **)notes, nnotes);
+    print_spec(&g, f, (const char **)notes, nnotes);
     fclose(f);
 
-    printf("thorn: decompiled %s into %s (%zu target%s, %zu note%s)\n",
-           in, out, g.count, g.count == 1 ? "" : "s", nnotes,
-           nnotes == 1 ? "" : "s");
+    if (g.cmd_count > 0) {
+        printf("thorn: decompiled %s into %s (%zu target%s, %zu command%s, %zu note%s)\n",
+               in, out, g.count, g.count == 1 ? "" : "s",
+               g.cmd_count, g.cmd_count == 1 ? "" : "s",
+               nnotes, nnotes == 1 ? "" : "s");
+    } else {
+        printf("thorn: decompiled %s into %s (%zu target%s, %zu note%s)\n",
+               in, out, g.count, g.count == 1 ? "" : "s",
+               nnotes, nnotes == 1 ? "" : "s");
+    }
 
     for (size_t i = 0; i < nnotes; i++)
         free(notes[i]);
@@ -180,7 +223,9 @@ static int cmd_decompile(const char *in, const char *out)
 /* Resolve and register the fallback link object for the context. */
 static void register_link_obj(PithContext *ctx, const char *argv0)
 {
-    const char *obj = getenv("THORN_ENGINE_OBJ");
+    const char *obj = getenv("THORN_LINK_OBJ");
+    if (!obj || !*obj)
+        obj = getenv("THORN_ENGINE_OBJ");
     if (obj && *obj) {
         pith_register_link_object(ctx, obj);
         return;
@@ -193,23 +238,23 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
         *slash = '\0';
     else
         snprintf(path, sizeof(path), ".");
-    char cand[4096];
+    char cand[8192];
 
-    /* the bootstrap layout: <thorn>/out/artifacts/thorn_engine.o */
-    snprintf(cand, sizeof(cand), "%s/artifacts/thorn_engine.o", path);
+    /* the bootstrap layout: <thorn>/out/artifacts/engine.o */
+    snprintf(cand, sizeof(cand), "%s/artifacts/engine.o", path);
     if (access(cand, R_OK) == 0) {
         pith_register_link_object(ctx, cand);
         return;
     }
     /* the self-built layout: thorn_core.a beside the binary carries
-     * the engine member (archives resolve members on demand) */
+     * the engine member */
     snprintf(cand, sizeof(cand), "%s/thorn_core.a", path);
     if (access(cand, R_OK) == 0) {
         pith_register_link_object(ctx, cand);
         return;
     }
     /* flat beside the binary */
-    snprintf(cand, sizeof(cand), "%s/thorn_engine.o", path);
+    snprintf(cand, sizeof(cand), "%s/engine.o", path);
     pith_register_link_object(ctx, cand);
 }
 
@@ -242,7 +287,7 @@ static void configure_runtime_env(const char *argv0)
         *slash = '\0';
     else
         snprintf(path, sizeof(path), ".");
-    char cand[4096];
+    char cand[8192];
     snprintf(cand, sizeof(cand), "%s/../../pith/runtime/libruntime.a",
              path);
     if (access(cand, F_OK) == 0)
@@ -251,7 +296,6 @@ static void configure_runtime_env(const char *argv0)
 
 int main(int argc, char **argv)
 {
-    /* a leading flag implies the build verb: thorn --ninja */
     int argbase = 1;
     const char *verb = "build";
     if (argc >= 2 && argv[1][0] != '-') {
@@ -262,43 +306,84 @@ int main(int argc, char **argv)
     if (strcmp(verb, "build") == 0) {
         const char *spec_path = NULL;
         const char *out_dir = ".";
-        int want_ninja = 1, want_make = 1;
+        const char *cli_engine = NULL;
+        const char *cli_compiler = NULL;
+        const char *cli_ar = NULL;
 
         for (int i = argbase; i < argc; i++) {
             if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
                 spec_path = argv[++i];
-            } else if (strcmp(argv[i], "--out-dir") == 0 &&
-                       i + 1 < argc) {
+            } else if (strcmp(argv[i], "--out-dir") == 0 && i + 1 < argc) {
                 out_dir = argv[++i];
+            } else if (strcmp(argv[i], "--engine") == 0 && i + 1 < argc) {
+                cli_engine = argv[++i];
             } else if (strcmp(argv[i], "--ninja") == 0) {
-                want_make = 0;
+                cli_engine = "ninja";
             } else if (strcmp(argv[i], "--make") == 0) {
-                want_ninja = 0;
+                cli_engine = "make";
+            } else if (strcmp(argv[i], "--compiler") == 0 && i + 1 < argc) {
+                cli_compiler = argv[++i];
+            } else if (strcmp(argv[i], "--ar") == 0 && i + 1 < argc) {
+                cli_ar = argv[++i];
             } else {
-                thorn_diag("unknown flag `%s`", argv[i]);
+                diag("unknown flag `%s`", argv[i]);
                 usage();
                 return 2;
             }
         }
+
+        if (cli_engine) {
+            if (strcmp(cli_engine, "ninja") != 0 &&
+                strcmp(cli_engine, "make") != 0 &&
+                strcmp(cli_engine, "both") != 0) {
+                diag("unknown engine `%s` (expected ninja, make, or both)",
+                     cli_engine);
+                return 2;
+            }
+        }
+
+        /* Compiler resolution: flag > CC env > cc */
+        const char *cc = cli_compiler;
+        if (!cc || !*cc)
+            cc = getenv("CC");
+        if (!cc || !*cc)
+            cc = "cc";
+        if (!validate_executable(cc)) {
+            diag("compiler `%s` not found in PATH or not executable", cc);
+            return 1;
+        }
+        setenv("CC", cc, 1);
+
+        /* Ar resolution: flag > AR env > ar */
+        const char *ar = cli_ar;
+        if (!ar || !*ar)
+            ar = getenv("AR");
+        if (!ar || !*ar)
+            ar = "ar";
+        if (!validate_executable(ar)) {
+            diag("archiver `%s` not found in PATH or not executable", ar);
+            return 1;
+        }
+        setenv("AR", ar, 1);
+
         if (!spec_path) {
             if (access("build.thorn", R_OK) == 0)
                 spec_path = "build.thorn";
             else if (access("thorn.pith", R_OK) == 0)
                 spec_path = "thorn.pith";
             else {
-                thorn_diag("no build.thorn or thorn.pith in the "
-                           "current directory (pass -f <spec>)");
+                diag("no build.thorn or thorn.pith in the current directory (pass -f <spec>)");
                 return 1;
             }
         }
 
         PithContext *ctx = pith_context_new();
         if (!ctx) {
-            thorn_diag("cannot create the pith context");
+            diag("cannot create the pith context");
             return 1;
         }
-        if (thorn_host_register(ctx) != 0) {
-            thorn_diag("cannot register the thorn_engine namespace");
+        if (host_register(ctx) != 0) {
+            diag("cannot register the engine namespace");
             pith_context_free(ctx);
             return 1;
         }
@@ -307,14 +392,14 @@ int main(int argc, char **argv)
 
         char *src = read_all(spec_path);
         if (!src) {
-            thorn_diag("cannot read the specification %s", spec_path);
+            diag("cannot read the specification %s", spec_path);
             pith_context_free(ctx);
             return 1;
         }
         size_t sl = strlen(src), el = strlen(EMISSION_EPILOGUE);
         char *full = malloc(sl + el + 1);
         if (!full) {
-            thorn_diag("out of memory");
+            diag("out of memory");
             free(src);
             pith_context_free(ctx);
             return 1;
@@ -323,14 +408,16 @@ int main(int argc, char **argv)
         memcpy(full + sl, EMISSION_EPILOGUE, el + 1);
         free(src);
 
-        if (setenv("THORN_OUT_DIR", out_dir, 1) != 0 ||
-            setenv("THORN_EMIT_NINJA", want_ninja ? "1" : "0", 1) != 0 ||
-            setenv("THORN_EMIT_MAKE", want_make ? "1" : "0", 1) != 0) {
-            thorn_diag("cannot export the emission environment");
+        if (setenv("THORN_OUT_DIR", out_dir, 1) != 0) {
+            diag("cannot export the output directory");
             free(full);
             pith_context_free(ctx);
             return 1;
         }
+        if (cli_engine)
+            setenv("THORN_ENGINE", cli_engine, 1);
+        else
+            unsetenv("THORN_ENGINE");
 
         int rc = pith_eval_string(ctx, full);
         pith_context_free(ctx);
@@ -347,13 +434,13 @@ int main(int argc, char **argv)
             else if (!in)
                 in = argv[i];
             else {
-                thorn_diag("unexpected argument `%s`", argv[i]);
+                diag("unexpected argument `%s`", argv[i]);
                 usage();
                 return 2;
             }
         }
         if (!in) {
-            thorn_diag("decompile expects an input file");
+            diag("decompile expects an input file");
             usage();
             return 2;
         }
@@ -370,7 +457,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    thorn_diag("unknown command `%s`", verb);
+    diag("unknown command `%s`", verb);
     usage();
     return 2;
 }

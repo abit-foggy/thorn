@@ -26,22 +26,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "include/thorn_engine.h"
+#include "include/engine.h"
 
 /* ------------------------------------------------------------------ */
 /* Notes & diagnostics                                               */
 /* ------------------------------------------------------------------ */
 
-static void diag(const char *fmt, ...)
-{
-    va_list ap;
-    fputs("thorn: ", stderr);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    fflush(stderr);
-}
+
 
 static void note_add(char ***notes, size_t *n, const char *fmt, ...)
 {
@@ -628,10 +619,6 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
     for (size_t i = 0; i < doc->nrules; i++) {
         NRule *r = &doc->rules[i];
         rcls[i] = r->command ? classify_text(r->command) : RC_OTHER;
-        if (rcls[i] == RC_OTHER)
-            note_add(notes, nnotes,
-                     "unmodeled rule `%s`; its edges are dropped",
-                     r->name);
     }
 
     size_t ne = doc->nedges;
@@ -662,6 +649,12 @@ static void map_ninja(const NDoc *doc, Graph *g, const char *pfx,
             continue;
         }
         cls[i] = rcls[ri];
+        if (cls[i] == RC_OTHER && doc->rules[ri].command && e->nout > 0) {
+            const char *out = strip_pfx(e->outs[0], pfx);
+            const char *in = e->nin > 0 ? strip_pfx(e->ins[0], pfx) : "";
+            graph_add_command(g, out, doc->rules[ri].command, in);
+            consumed[i] = 1;
+        }
     }
 
     /* pass 1: create targets in file order */
@@ -1092,6 +1085,45 @@ static ObjInfo *objmap_find(ObjInfo *m, size_t n, const char *obj)
     return NULL;
 }
 
+
+static void subst_make_to_cmd(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < n; ) {
+        if (in[i] == '$') {
+            if (in[i + 1] == '$') {
+                if (o + 2 < n) {
+                    out[o++] = '$';
+                    out[o++] = '$';
+                }
+                i += 2;
+                continue;
+            }
+            if (in[i + 1] == '@') {
+                if (o + 4 < n) {
+                    out[o++] = '$';
+                    out[o++] = 'o';
+                    out[o++] = 'u';
+                    out[o++] = 't';
+                }
+                i += 2;
+                continue;
+            }
+            if (in[i + 1] == '<') {
+                if (o + 3 < n) {
+                    out[o++] = '$';
+                    out[o++] = 'i';
+                    out[o++] = 'n';
+                }
+                i += 2;
+                continue;
+            }
+        }
+        out[o++] = in[i++];
+    }
+    out[o] = '\0';
+}
+
 static void map_make(const MDoc *doc, Graph *g, const char *pfx,
                      char ***notes, size_t *nnotes)
 {
@@ -1362,6 +1394,16 @@ static void map_make(const MDoc *doc, Graph *g, const char *pfx,
         if (strcmp(tgt, ".PHONY") == 0 || strcmp(tgt, "all") == 0 ||
             strcmp(tgt, "clean") == 0)
             continue;
+        char *rec = rule_recipe_text(r, &doc->vars);
+        if (rec) {
+            char cmd_buf[2048];
+            subst_make_to_cmd(rec, cmd_buf, sizeof(cmd_buf));
+            const char *out = strip_pfx(tgt, pfx);
+            const char *in = r->nprq > 0 ? strip_pfx(r->prereqs[0], pfx) : "";
+            graph_add_command(g, out, cmd_buf, in);
+            free(rec);
+            continue;
+        }
         if (!noted_unmodeled) {
             noted_unmodeled = 1;
             note_add(notes, nnotes,
@@ -1410,7 +1452,7 @@ static int sniff_is_ninja(const char *mem)
     return 0;
 }
 
-int thorn_decompile_file(const char *path, Graph *g, char ***notes,
+int decompile_file(const char *path, Graph *g, char ***notes,
                          size_t *nnotes)
 {
     *notes = NULL;
@@ -1425,26 +1467,28 @@ int thorn_decompile_file(const char *path, Graph *g, char ***notes,
     int rc = 1;
     if (sniff_is_ninja(mem)) {
         char pfx[2048];
-        thorn_dir_prefix(path, pfx, sizeof(pfx));
+        dir_prefix(path, pfx, sizeof(pfx));
+        snprintf(g->backend, sizeof(g->backend), "ninja");
         NDoc doc;
         memset(&doc, 0, sizeof(doc));
         parse_ninja(mem, &doc, notes, nnotes);
         map_ninja(&doc, g, pfx, notes, nnotes);
         ninja_doc_free(&doc);
-        rc = g->count == 0;
+        rc = (g->count == 0 && g->cmd_count == 0);
     } else {
         char pfx[2048];
-        thorn_dir_prefix(path, pfx, sizeof(pfx));
+        dir_prefix(path, pfx, sizeof(pfx));
+        snprintf(g->backend, sizeof(g->backend), "make");
         MDoc doc;
         memset(&doc, 0, sizeof(doc));
         parse_make(mem, &doc, notes, nnotes);
         map_make(&doc, g, pfx, notes, nnotes);
         mdoc_free(&doc);
-        rc = g->count == 0;
+        rc = (g->count == 0 && g->cmd_count == 0);
     }
 
     free(mem);
     if (rc)
-        diag("no buildable targets found in %s", path);
+        diag("no buildable targets or commands found in %s", path);
     return rc;
 }

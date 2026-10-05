@@ -1,0 +1,271 @@
+#!/bin/sh
+# verify.sh - the thorn acceptance suite (embed mode).
+#
+# Proves the full contract:
+#   stage 1: out/thorn built by linking thorn's engine with pith's
+#            frontend (the embedded language) and runtime
+#   stage 2: thorn evaluates its own build.thorn at runtime, emits
+#            out/artifacts/build.ninja, and samu rebuilds thorn from
+#            it (self-hosting through its own generated backend)
+#   sample:  generic thorn binary evaluates fixture build.thorn,
+#            both backends build the project, program output matches
+#   reverse: thorn decompile ingests build.ninja and Makefile into
+#            idiomatic build.thorn specs, and decompiled spec
+#            regenerates a byte-identical build.ninja
+#   features: engine selection errors, toolchain bake/validation,
+#            custom commands (add_command), and whitespace validation
+#
+# Prerequisite: pith built at ../pith (see the Makefile).
+
+set -e
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+PITH_ROOT=$(cd "$ROOT/../pith" && pwd)
+SCRATCH=$(mktemp -d /tmp/opencode/thorn-verify.XXXXXX)
+
+PASS=0
+FAIL=0
+
+ok()  { printf '  ok  %s\n' "$1"; PASS=$((PASS + 1)); }
+bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
+step() { printf '\n== %s ==\n' "$1"; }
+
+DEMO_OUT='demo: add(2,3) = 5
+demo: mul(4,5) = 20
+demo: sqrt(144.0) = 12.0'
+
+# ------------------------------------------------------------------
+step "stage 1: build out/thorn (thorn engine + embedded pith)"
+make -C "$ROOT" clean >/dev/null 2>&1 || true
+make -C "$ROOT" >/dev/null
+if [ -x "$ROOT/out/thorn" ]; then
+    ok "out/thorn built"
+else
+    bad "out/thorn missing"; exit 1
+fi
+"$ROOT/out/thorn" version | grep -q "thorn 0.3.0" && ok "thorn version reports 0.3.0"
+
+# ------------------------------------------------------------------
+step "stage 2: thorn self-hosts through its own generated backend"
+cd "$ROOT"
+./out/thorn --out-dir out/artifacts >/dev/null 2>&1
+[ -f out/artifacts/build.ninja ] && ok "ninja backend generated into out/artifacts"
+samu -f out/artifacts/build.ninja >/dev/null 2>&1
+[ -x out/artifacts/thorn ] && ok "samu rebuilt thorn from its own ninja"
+./out/artifacts/thorn version | grep -q "thorn 0.3.0" \
+    && ok "stage 2 thorn runs (embeds pith, reads specs at runtime)"
+
+# determinism: a second run emits identical bytes
+cp out/artifacts/build.ninja "$SCRATCH/self.ninja"
+./out/thorn --out-dir out/artifacts >/dev/null 2>&1
+if cmp -s out/artifacts/build.ninja "$SCRATCH/self.ninja"; then
+    ok "deterministic: identical bytes across runs"
+else
+    bad "ninja output not deterministic"
+fi
+
+# the stage 2 binary fully works too (decompile path, no pith needed)
+./out/artifacts/thorn decompile out/artifacts/build.ninja \
+    -o "$SCRATCH/self.thorn" >/dev/null \
+    && grep -q 'add_target("thorn_core", engine.static_lib)' \
+        "$SCRATCH/self.thorn" \
+    && ok "stage 2 binary decompiles its own backend"
+
+# ------------------------------------------------------------------
+step "sample: materialize fixture project in temporary directory"
+SAMPLE_DIR="$SCRATCH/sample"
+mkdir -p "$SAMPLE_DIR"
+cp -r "$ROOT/tests/fixtures/"* "$SAMPLE_DIR/"
+cd "$SAMPLE_DIR"
+
+"$ROOT/out/thorn" >/dev/null 2>&1
+[ -f build.ninja ] && [ -f Makefile ] \
+    && ok "sample backends emitted in project directory"
+
+step "sample: samu (ninja backend)"
+samu >/dev/null 2>&1
+out=$(./demo_app)
+if [ "$out" = "$DEMO_OUT" ]; then
+    ok "samu build runs the sample, output matches"
+else
+    bad "samu sample output mismatch: $out"
+fi
+
+step "sample: make (portable Makefile backend)"
+samu -t clean >/dev/null 2>&1
+make >/dev/null
+out=$(./demo_app)
+if [ "$out" = "$DEMO_OUT" ]; then
+    ok "make build runs the sample, output matches"
+else
+    bad "make sample output mismatch: $out"
+fi
+
+# ------------------------------------------------------------------
+step "reverse: decompile build.ninja into build.thorn"
+"$ROOT/out/thorn" decompile build.ninja -o build.decompiled.thorn >/dev/null
+grep -q 'engine.project("demo")' build.decompiled.thorn \
+    && ok "decompile recovers the project name"
+grep -q 'engine.backend("ninja")' build.decompiled.thorn \
+    && ok "decompile recovers backend selection"
+grep -q 'add_target("demo_app", engine.exe)' \
+    build.decompiled.thorn \
+    && ok "decompile recovers the target and type"
+grep -q 'add_source("demo_app", "main.c")' build.decompiled.thorn \
+    && grep -q 'add_source("demo_app", "util.c")' \
+    build.decompiled.thorn \
+    && ok "decompile recovers the sources"
+grep -q 'add_include("demo_app", ".")' build.decompiled.thorn \
+    && grep -q 'add_cflag("demo_app", "-O2")' build.decompiled.thorn \
+    && ok "decompile recovers includes and cflags"
+grep -q 'add_ldflag("demo_app", "-lm")' build.decompiled.thorn \
+    && ok "decompile recovers ldflags"
+
+step "reverse: decompile the Makefile"
+"$ROOT/out/thorn" decompile Makefile -o build.from_make.thorn >/dev/null
+grep -q 'engine.backend("make")' build.from_make.thorn \
+    && ok "makefile decompile recovers make backend"
+grep -q 'add_source("demo_app", "main.c")' build.from_make.thorn \
+    && grep -q 'add_ldflag("demo_app", "-lm")' build.from_make.thorn \
+    && ok "makefile decompile recovers sources and ldflags"
+
+step "roundtrip: the decompiled spec regenerates identical ninja"
+rt="$SCRATCH/rt"
+rm -rf "$rt" && mkdir -p "$rt"
+cp "$SAMPLE_DIR/build.decompiled.thorn" "$rt/build.thorn"
+cp "$SAMPLE_DIR/main.c" "$SAMPLE_DIR/util.c" "$SAMPLE_DIR/util.h" "$rt/"
+(cd "$rt" && "$ROOT/out/thorn" >/dev/null 2>&1)
+if cmp -s "$rt/build.ninja" "$SAMPLE_DIR/build.ninja"; then
+    ok "ROUNDTRIP: decompiled spec regenerates a byte-identical build.ninja"
+else
+    bad "roundtrip build.ninja differs"
+    diff "$SAMPLE_DIR/build.ninja" "$rt/build.ninja" | head -20 || true
+fi
+
+# ------------------------------------------------------------------
+step "feature: engine selection errors and CLI overrides"
+NO_ENG_DIR="$SCRATCH/no_engine"
+mkdir -p "$NO_ENG_DIR"
+cat << 'EOF' > "$NO_ENG_DIR/build.thorn"
+engine.project("no_eng")
+engine.add_target("dummy", engine.exe)
+engine.add_source("dummy", "dummy.c")
+EOF
+printf 'int main(void) { return 0; }\n' > "$NO_ENG_DIR/dummy.c"
+
+# No engine selected -> must fail
+if (cd "$NO_ENG_DIR" && "$ROOT/out/thorn" 2>"$NO_ENG_DIR/err.log"); then
+    bad "expected failure when no engine is selected"
+else
+    ok "fails with error when neither spec nor flag selects an engine"
+fi
+grep -q "no engine selected" "$NO_ENG_DIR/err.log" \
+    && ok "diagnostic explains engine selection requirement"
+
+# Override with --engine ninja
+(cd "$NO_ENG_DIR" && "$ROOT/out/thorn" --engine ninja >/dev/null 2>&1)
+[ -f "$NO_ENG_DIR/build.ninja" ] && [ ! -f "$NO_ENG_DIR/Makefile" ] \
+    && ok "--engine ninja produces only build.ninja"
+
+# Override with --engine make
+rm -f "$NO_ENG_DIR/build.ninja"
+(cd "$NO_ENG_DIR" && "$ROOT/out/thorn" --engine make >/dev/null 2>&1)
+[ ! -f "$NO_ENG_DIR/build.ninja" ] && [ -f "$NO_ENG_DIR/Makefile" ] \
+    && ok "--engine make produces only Makefile"
+
+# Override with --engine both
+(cd "$NO_ENG_DIR" && "$ROOT/out/thorn" --engine both >/dev/null 2>&1)
+[ -f "$NO_ENG_DIR/build.ninja" ] && [ -f "$NO_ENG_DIR/Makefile" ] \
+    && ok "--engine both produces both backends"
+
+# ------------------------------------------------------------------
+step "feature: compiler selection and PATH validation"
+COMP_DIR="$SCRATCH/comp_test"
+mkdir -p "$COMP_DIR"
+cp "$NO_ENG_DIR/build.thorn" "$COMP_DIR/"
+cp "$NO_ENG_DIR/dummy.c" "$COMP_DIR/"
+
+# Valid compiler and ar bake into backends
+(cd "$COMP_DIR" && "$ROOT/out/thorn" --engine both --compiler gcc --ar ar >/dev/null 2>&1)
+grep -q "^cc = gcc" "$COMP_DIR/build.ninja" && grep -q "^CC = gcc" "$COMP_DIR/Makefile" \
+    && ok "--compiler gcc baked into both backends"
+grep -q "^ar = ar" "$COMP_DIR/build.ninja" && grep -q "^AR = ar" "$COMP_DIR/Makefile" \
+    && ok "--ar ar baked into both backends"
+
+# Non-existent compiler fails PATH validation
+if (cd "$COMP_DIR" && "$ROOT/out/thorn" --engine ninja --compiler non_existent_compiler_123 2>"$COMP_DIR/err.log"); then
+    bad "expected failure for invalid compiler"
+else
+    ok "rejects non-existent compiler"
+fi
+grep -q "not found in PATH or not executable" "$COMP_DIR/err.log" \
+    && ok "PATH validation diagnostic reported"
+
+# ------------------------------------------------------------------
+step "feature: custom commands (add_command) with token substitution"
+CMD_DIR="$SCRATCH/cmd_test"
+mkdir -p "$CMD_DIR"
+cat << 'EOF' > "$CMD_DIR/build.thorn"
+engine.project("cmd_demo")
+engine.backend("both")
+
+engine.add_command("generated.h", "echo '#define GREETING \"hello_custom\"' > $out", "")
+engine.add_target("cmd_app", engine.exe)
+engine.add_source("cmd_app", "main.c")
+engine.add_order_dep("cmd_app", "generated.h")
+EOF
+
+cat << 'EOF' > "$CMD_DIR/main.c"
+#include <stdio.h>
+#include "generated.h"
+int main(void) {
+    printf("%s\n", GREETING);
+    return 0;
+}
+EOF
+
+(cd "$CMD_DIR" && "$ROOT/out/thorn" >/dev/null 2>&1)
+[ -f "$CMD_DIR/build.ninja" ] && [ -f "$CMD_DIR/Makefile" ] \
+    && ok "backends emitted for project with add_command"
+
+# Ninja build with custom command
+(cd "$CMD_DIR" && samu >/dev/null 2>&1)
+cmd_out=$("$CMD_DIR/cmd_app")
+[ "$cmd_out" = "hello_custom" ] && ok "samu builds and runs custom command edge"
+
+# Make build with custom command
+(cd "$CMD_DIR" && samu -t clean >/dev/null 2>&1 && rm -f generated.h cmd_app)
+(cd "$CMD_DIR" && make >/dev/null 2>&1)
+cmd_out=$("$CMD_DIR/cmd_app")
+[ "$cmd_out" = "hello_custom" ] && ok "make builds and runs custom command edge"
+
+# Decompile recovers add_command
+(cd "$CMD_DIR" && "$ROOT/out/thorn" decompile build.ninja -o decomp.thorn >/dev/null)
+grep -q 'engine.add_command("generated.h"' "$CMD_DIR/decomp.thorn" \
+    && ok "decompile recovers add_command from build.ninja"
+(cd "$CMD_DIR" && "$ROOT/out/thorn" decompile Makefile -o decomp_mk.thorn >/dev/null)
+grep -q 'engine.add_command("generated.h"' "$CMD_DIR/decomp_mk.thorn" \
+    && ok "decompile recovers add_command from Makefile"
+
+# ------------------------------------------------------------------
+step "feature: whitespace rejection in identifiers and flags"
+WS_DIR="$SCRATCH/ws_test"
+mkdir -p "$WS_DIR"
+cat << 'EOF' > "$WS_DIR/build.thorn"
+engine.project("ws_demo")
+engine.backend("ninja")
+engine.add_target("app target", engine.exe)
+EOF
+if (cd "$WS_DIR" && "$ROOT/out/thorn" 2>"$WS_DIR/err.log"); then
+    bad "expected failure when target name has whitespace"
+else
+    ok "rejects whitespace in target name"
+fi
+grep -q "contains whitespace" "$WS_DIR/err.log" \
+    && ok "whitespace rejection diagnostic reported"
+
+# ------------------------------------------------------------------
+printf '\n'
+printf 'thorn acceptance: %d passed, %d failed\n' "$PASS" "$FAIL"
+rm -rf "$SCRATCH"
+[ "$FAIL" -eq 0 ]

@@ -1,5 +1,5 @@
 /*
- * thorn_engine.c - the C99 host engine for thorn, a lean meta-build
+ * engine.c - the C99 host engine for thorn, a lean meta-build
  * generator that embeds The Pith Programming Language.
  *
  * A thorn is the sharp spine on the stem of a plant; it grows on the
@@ -11,10 +11,10 @@
  *   thorn embeds pith's frontend (libtcc/libqbe/libruntime joined at
  *   link time, see the bootstrap Makefile). At runtime thorn reads
  *   build.thorn, registers its build API as a host namespace
- *   (thorn_engine.*) through pith's embed ABI, and evaluates the
+ *   (engine.*) through pith's embed ABI, and evaluates the
  *   spec. The script configures the graph by calling the API
  *   directly through the C ABI; thorn appends an emission epilogue
- *   that calls thorn_engine.emit(), which writes a deterministic
+ *   that calls engine.emit(), which writes a deterministic
  *   build.ninja (samurai/ninja) and a portable Makefile.
  *
  *   Because evaluation may run in-memory (tcc JIT) or through the
@@ -22,12 +22,12 @@
  *   emission both live in this engine: on the fallback the child
  *   process builds the graph in its own copy of this object (linked
  *   from the registered link object) and writes the backends itself.
- *   thorn_engine.c therefore contains no main(); the CLI lives in
- *   src/thorn_main.c, and this file compiles under the
- *   -D<stem>=c_thorn_engine_<stem> renames so the fallback link
- *   resolves every registered symbol.
+ *   engine.c therefore contains no main(); the CLI lives in
+ *   src/main.c, and this file compiles under the
+ *   -D<stem>=c_engine_<stem> renames so the fallback link resolves
+ *   every registered symbol.
  *
- * Pith ABI notes (verified against pith 0.1.0 sources):
+ * Pith ABI notes:
  *   - string parameters are borrowed PithValue* (NUL-terminated,
  *     copy with strdup when storing)
  *   - int parameters/returns are 32-bit ('w'); pith narrows its
@@ -35,7 +35,7 @@
  *   - every API function returns int so pith can call it as a bare
  *     statement or test it with `if`
  *   - zero-parameter functions double as pseudo-constants in pith:
- *     `thorn_engine.exe` (bare member access emits the call)
+ *     `engine.exe` (bare member access emits the call)
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
@@ -50,13 +50,13 @@
 
 #include <pith.h>
 
-#include "include/thorn_engine.h"
+#include "include/engine.h"
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                        */
 /* ------------------------------------------------------------------ */
 
-void thorn_diag(const char *fmt, ...)
+void diag(const char *fmt, ...)
 {
     va_list ap;
     fputs("thorn: ", stderr);
@@ -113,8 +113,16 @@ static void sb_free(SBuf *b)
 }
 
 /* ------------------------------------------------------------------ */
-/* Graph model                                                        */
+/* Model implementation                                               */
 /* ------------------------------------------------------------------ */
+
+int strlist_push(StrList *l, const char *s)
+{
+    for (size_t i = 0; i < l->count; i++)
+        if (strcmp(l->items[i], s) == 0)
+            return 0;
+    return strlist_push_force(l, s);
+}
 
 int strlist_push_force(StrList *l, const char *s)
 {
@@ -126,19 +134,11 @@ int strlist_push_force(StrList *l, const char *s)
         l->items = ni;
         l->cap = nc;
     }
-    char *d = strdup(s);
-    if (!d)
+    char *c = strdup(s);
+    if (!c)
         return 0;
-    l->items[l->count++] = d;
+    l->items[l->count++] = c;
     return 1;
-}
-
-int strlist_push(StrList *l, const char *s)
-{
-    for (size_t i = 0; i < l->count; i++)
-        if (strcmp(l->items[i], s) == 0)
-            return 0;
-    return strlist_push_force(l, s);
 }
 
 void strlist_free(StrList *l)
@@ -146,7 +146,8 @@ void strlist_free(StrList *l)
     for (size_t i = 0; i < l->count; i++)
         free(l->items[i]);
     free(l->items);
-    memset(l, 0, sizeof(*l));
+    l->items = NULL;
+    l->count = l->cap = 0;
 }
 
 void graph_init(Graph *g)
@@ -158,14 +159,19 @@ void graph_init(Graph *g)
 void graph_free(Graph *g)
 {
     for (size_t i = 0; i < g->count; i++) {
-        strlist_free(&g->targets[i].sources);
-        strlist_free(&g->targets[i].cflags);
-        strlist_free(&g->targets[i].ldflags);
-        strlist_free(&g->targets[i].includes);
-        strlist_free(&g->targets[i].order_deps);
+        Target *t = &g->targets[i];
+        strlist_free(&t->sources);
+        strlist_free(&t->cflags);
+        strlist_free(&t->ldflags);
+        strlist_free(&t->includes);
+        strlist_free(&t->order_deps);
     }
     free(g->targets);
-    memset(g, 0, sizeof(*g));
+    g->targets = NULL;
+    g->count = g->cap = 0;
+    free(g->commands);
+    g->commands = NULL;
+    g->cmd_count = g->cmd_cap = 0;
 }
 
 Target *graph_find(Graph *g, const char *name)
@@ -178,10 +184,8 @@ Target *graph_find(Graph *g, const char *name)
 
 Target *graph_add(Graph *g, const char *name, int type)
 {
-    if (graph_find(g, name))
-        return NULL;
     if (g->count == g->cap) {
-        size_t nc = g->cap ? g->cap * 2 : 8;
+        size_t nc = g->cap ? g->cap * 2 : 4;
         Target *nt = realloc(g->targets, nc * sizeof(Target));
         if (!nt)
             return NULL;
@@ -195,58 +199,99 @@ Target *graph_add(Graph *g, const char *name, int type)
     return t;
 }
 
+int graph_add_command(Graph *g, const char *out, const char *cmd,
+                      const char *in)
+{
+    if (g->cmd_count == g->cmd_cap) {
+        size_t nc = g->cmd_cap ? g->cmd_cap * 2 : 4;
+        Command *nc_arr = realloc(g->commands, nc * sizeof(Command));
+        if (!nc_arr)
+            return 0;
+        g->commands = nc_arr;
+        g->cmd_cap = nc;
+    }
+    Command *c = &g->commands[g->cmd_count++];
+    memset(c, 0, sizeof(*c));
+    snprintf(c->output, sizeof(c->output), "%s", out);
+    snprintf(c->command, sizeof(c->command), "%s", cmd);
+    if (in)
+        snprintf(c->input, sizeof(c->input), "%s", in);
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* Path helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-void thorn_join_path(char *out, size_t n, const char *dir,
-                     const char *name)
+void join_path(char *out, size_t n, const char *dir,
+               const char *name)
 {
-    if (strcmp(dir, ".") == 0)
+    if (!dir || !*dir || strcmp(dir, ".") == 0)
         snprintf(out, n, "%s", name);
+    else if (dir[strlen(dir) - 1] == '/')
+        snprintf(out, n, "%s%s", dir, name);
     else
         snprintf(out, n, "%s/%s", dir, name);
 }
 
-void thorn_dir_prefix(const char *path, char *prefix, size_t n)
+void dir_prefix(const char *path, char *prefix, size_t n)
 {
     const char *slash = strrchr(path, '/');
-    if (!slash || slash == path) {
+    if (!slash) {
         prefix[0] = '\0';
         return;
     }
-    size_t len = (size_t)(slash - path);
+    size_t len = (size_t)(slash - path + 1);
     if (len >= n)
         len = n - 1;
     memcpy(prefix, path, len);
     prefix[len] = '\0';
-    if (len + 1 < n) {
-        prefix[len] = '/';
-        prefix[len + 1] = '\0';
-    }
 }
 
-int thorn_makedirs(const char *dir)
+int makedirs(const char *dir)
 {
     char tmp[4096];
-    snprintf(tmp, sizeof(tmp), "%s", dir);
-    size_t l = strlen(tmp);
-    for (size_t i = 1; i <= l; i++) {
-        if (tmp[i] == '/' || tmp[i] == '\0') {
-            char c = tmp[i];
-            tmp[i] = '\0';
+    size_t l = strlen(dir);
+    if (l >= sizeof(tmp)) {
+        diag("directory path too long: %s", dir);
+        return -1;
+    }
+    memcpy(tmp, dir, l + 1);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
             if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
-                thorn_diag("cannot create directory %s", tmp);
+                diag("cannot create directory %s: %s", tmp,
+                     strerror(errno));
                 return -1;
             }
-            tmp[i] = c;
+            *p = '/';
         }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        diag("cannot create directory %s: %s", tmp, strerror(errno));
+        return -1;
     }
     return 0;
 }
 
 /* ------------------------------------------------------------------ */
-/* The host-facing API (thorn_engine.* in pith)                       */
+/* Whitespace validator                                               */
+/* ------------------------------------------------------------------ */
+
+static int has_whitespace(const char *s)
+{
+    if (!s)
+        return 0;
+    for (const char *p = s; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+            return 1;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Host API (the symbols pith calls)                                  */
 /* ------------------------------------------------------------------ */
 
 static Graph g_graph;
@@ -260,66 +305,84 @@ static void ensure_graph(void)
     }
 }
 
-/* Shared precondition: resolve the target named by the first string
- * argument of an add_* call. */
 static Target *want_target(const char *api, PithValue *name)
 {
     ensure_graph();
     if (!name) {
-        thorn_diag("%s() expects a target name string", api);
+        diag("%s() expects a target name string", api);
         return NULL;
     }
     const char *n = pithStringData(name);
     Target *t = graph_find(&g_graph, n);
     if (!t)
-        thorn_diag("%s(): unknown target `%s` (declare it with "
-                   "add_target first)", api, n);
+        diag("%s(): unknown target `%s` (declare it with add_target first)",
+             api, n);
     return t;
 }
-
-/* int returns cross to pith as 32-bit words, widened via extsw. */
 
 int project(PithValue *name)
 {
     ensure_graph();
     if (!name) {
-        thorn_diag("project() expects a project name string");
+        diag("project() expects a project name string");
         return 0;
     }
-    snprintf(g_graph.proj, sizeof(g_graph.proj), "%s",
-             pithStringData(name));
+    const char *n = pithStringData(name);
+    if (has_whitespace(n)) {
+        diag("project(): name `%s` contains whitespace", n);
+        return 0;
+    }
+    snprintf(g_graph.proj, sizeof(g_graph.proj), "%s", n);
     return 1;
 }
 
-/* Zero-argument pseudo-constants: pith reads these through bare
- * member access (`thorn_engine.exe`). */
-int exe(void)          { return THORN_EXE; }
-int static_lib(void)   { return THORN_STATIC_LIB; }
+int backend(PithValue *name)
+{
+    ensure_graph();
+    if (!name) {
+        diag("backend() expects a backend name (\"ninja\", \"make\", or \"both\")");
+        return 0;
+    }
+    const char *b = pithStringData(name);
+    if (strcmp(b, "ninja") != 0 && strcmp(b, "make") != 0 && strcmp(b, "both") != 0) {
+        diag("backend(): unknown backend `%s` (expected \"ninja\", \"make\", or \"both\")", b);
+        return 0;
+    }
+    snprintf(g_graph.backend, sizeof(g_graph.backend), "%s", b);
+    return 1;
+}
+
+int exe(void)         { return THORN_EXE; }
+int static_lib(void)  { return THORN_STATIC_LIB; }
 int shared_lib(void)  { return THORN_SHARED_LIB; }
 
 int add_target(PithValue *name, int type)
 {
     ensure_graph();
     if (!name) {
-        thorn_diag("add_target() expects a target name string");
+        diag("add_target() expects a target name string");
         return 0;
     }
     if (type < THORN_EXE || type > THORN_SHARED_LIB) {
-        thorn_diag("add_target(): the type must be thorn_engine.exe, "
-                   "thorn_engine.static_lib or thorn_engine.shared_lib");
+        diag("add_target(): the type must be engine.exe, "
+             "engine.static_lib or engine.shared_lib");
         return 0;
     }
     const char *n = pithStringData(name);
     if (!n[0]) {
-        thorn_diag("add_target(): the name must not be empty");
+        diag("add_target(): the name must not be empty");
+        return 0;
+    }
+    if (has_whitespace(n)) {
+        diag("add_target(): target name `%s` contains whitespace", n);
         return 0;
     }
     if (graph_find(&g_graph, n)) {
-        thorn_diag("add_target(): duplicate target `%s`", n);
+        diag("add_target(): duplicate target `%s`", n);
         return 0;
     }
     if (!graph_add(&g_graph, n, type)) {
-        thorn_diag("add_target(): out of memory for `%s`", n);
+        diag("add_target(): out of memory for `%s`", n);
         return 0;
     }
     return 1;
@@ -331,13 +394,17 @@ int add_source(PithValue *target, PithValue *src)
     if (!t)
         return 0;
     if (!src) {
-        thorn_diag("add_source() expects a source path string");
+        diag("add_source() expects a source path string");
         return 0;
     }
     const char *s = pithStringData(src);
+    if (has_whitespace(s)) {
+        diag("add_source(): source path `%s` contains whitespace", s);
+        return 0;
+    }
     if (!strlist_push(&t->sources, s)) {
-        thorn_diag("warning: duplicate source `%s` on target `%s` "
-                   "skipped", s, t->name);
+        diag("warning: duplicate source `%s` on target `%s` skipped",
+             s, t->name);
         return 1;
     }
     return 1;
@@ -349,10 +416,15 @@ int add_cflag(PithValue *target, PithValue *flag)
     if (!t)
         return 0;
     if (!flag) {
-        thorn_diag("add_cflag() expects a flag string");
+        diag("add_cflag() expects a flag string");
         return 0;
     }
-    strlist_push(&t->cflags, pithStringData(flag));
+    const char *f = pithStringData(flag);
+    if (has_whitespace(f)) {
+        diag("add_cflag(): flag `%s` contains whitespace", f);
+        return 0;
+    }
+    strlist_push(&t->cflags, f);
     return 1;
 }
 
@@ -362,10 +434,15 @@ int add_ldflag(PithValue *target, PithValue *flag)
     if (!t)
         return 0;
     if (!flag) {
-        thorn_diag("add_ldflag() expects a flag string");
+        diag("add_ldflag() expects a flag string");
         return 0;
     }
-    strlist_push(&t->ldflags, pithStringData(flag));
+    const char *f = pithStringData(flag);
+    if (has_whitespace(f)) {
+        diag("add_ldflag(): flag `%s` contains whitespace", f);
+        return 0;
+    }
+    strlist_push(&t->ldflags, f);
     return 1;
 }
 
@@ -375,10 +452,15 @@ int add_include(PithValue *target, PithValue *dir)
     if (!t)
         return 0;
     if (!dir) {
-        thorn_diag("add_include() expects a directory string");
+        diag("add_include() expects a directory string");
         return 0;
     }
-    strlist_push(&t->includes, pithStringData(dir));
+    const char *d = pithStringData(dir);
+    if (has_whitespace(d)) {
+        diag("add_include(): directory `%s` contains whitespace", d);
+        return 0;
+    }
+    strlist_push(&t->includes, d);
     return 1;
 }
 
@@ -388,26 +470,54 @@ int add_order_dep(PithValue *target, PithValue *prereq)
     if (!t)
         return 0;
     if (!prereq) {
-        thorn_diag("add_order_dep() expects a prerequisite string");
+        diag("add_order_dep() expects a prerequisite string");
         return 0;
     }
-    strlist_push(&t->order_deps, pithStringData(prereq));
+    const char *p = pithStringData(prereq);
+    if (has_whitespace(p)) {
+        diag("add_order_dep(): prerequisite `%s` contains whitespace", p);
+        return 0;
+    }
+    strlist_push(&t->order_deps, p);
     return 1;
 }
 
-/*
- * thorn_engine.pkg_config(target, pkg) runs `pkg-config --cflags
- * --libs <pkg>` and folds the result into the target: -I dirs become
- * includes, -l/-L become ldflags, everything else becomes cflags.
- * (pith has no string-splitting primitives, so the split lives here.)
- */
+int add_command(PithValue *output, PithValue *command, PithValue *input)
+{
+    ensure_graph();
+    if (!output || !command) {
+        diag("add_command() expects output and command strings");
+        return 0;
+    }
+    const char *out = pithStringData(output);
+    const char *cmd = pithStringData(command);
+    const char *in = input ? pithStringData(input) : "";
+    if (!out[0] || !cmd[0]) {
+        diag("add_command(): output and command must not be empty");
+        return 0;
+    }
+    if (has_whitespace(out)) {
+        diag("add_command(): output `%s` contains whitespace", out);
+        return 0;
+    }
+    if (in[0] && has_whitespace(in)) {
+        diag("add_command(): input `%s` contains whitespace", in);
+        return 0;
+    }
+    if (!graph_add_command(&g_graph, out, cmd, in)) {
+        diag("add_command(): out of memory");
+        return 0;
+    }
+    return 1;
+}
+
 int pkg_config(PithValue *target, PithValue *pkg)
 {
     Target *t = want_target("pkg_config", target);
     if (!t)
         return 0;
     if (!pkg) {
-        thorn_diag("pkg_config() expects a package name string");
+        diag("pkg_config() expects a package name string");
         return 0;
     }
     const char *pn = pithStringData(pkg);
@@ -416,7 +526,7 @@ int pkg_config(PithValue *target, PithValue *pkg)
     snprintf(cmd, sizeof(cmd), "pkg-config --cflags --libs '%s'", pn);
     FILE *p = popen(cmd, "r");
     if (!p) {
-        thorn_diag("pkg_config(): cannot run pkg-config");
+        diag("pkg_config(): cannot run pkg-config");
         return 0;
     }
     char line[8192];
@@ -424,8 +534,8 @@ int pkg_config(PithValue *target, PithValue *pkg)
         line[0] = '\0';
     int st = pclose(p);
     if (st != 0) {
-        thorn_diag("pkg_config(): `pkg-config %s` failed (is the "
-                   "package installed?)", pn);
+        diag("pkg_config(): `pkg-config %s` failed (is the package installed?)",
+             pn);
         return 0;
     }
 
@@ -451,13 +561,6 @@ int pkg_config(PithValue *target, PithValue *pkg)
     return 1;
 }
 
-/*
- * thorn_engine.emit() - the emission trigger thorn appends to every
- * evaluated spec (and which specs may also call explicitly). Reads
- * the backend selection from the environment the CLI exported, so
- * evaluation behaves identically in-process (in-memory tcc) and in
- * the temp-executable fallback child.
- */
 int emit(void)
 {
     ensure_graph();
@@ -465,21 +568,37 @@ int emit(void)
     const char *dir = getenv("THORN_OUT_DIR");
     if (!dir || !*dir)
         dir = ".";
-    int want_nin = 1, want_mk = 1;
-    const char *v;
-    if ((v = getenv("THORN_EMIT_NINJA")) && strcmp(v, "0") == 0)
-        want_nin = 0;
-    if ((v = getenv("THORN_EMIT_MAKE")) && strcmp(v, "0") == 0)
-        want_mk = 0;
-    if (!want_nin && !want_mk) {
-        thorn_diag("no backend selected");
+
+    /* Determine backend: CLI env THORN_ENGINE overrides spec */
+    const char *sel = getenv("THORN_ENGINE");
+    if (!sel || !*sel) {
+        if (g_graph.backend[0])
+            sel = g_graph.backend;
+    }
+
+    if (!sel || !*sel) {
+        diag("no engine selected (specify engine.backend(\"ninja\") in spec or pass --engine <ninja|make|both>)");
         return 0;
     }
-    if (g_graph.count == 0) {
-        thorn_diag("the specification declared no targets");
+
+    int want_nin = 0, want_mk = 0;
+    if (strcmp(sel, "ninja") == 0) {
+        want_nin = 1;
+    } else if (strcmp(sel, "make") == 0) {
+        want_mk = 1;
+    } else if (strcmp(sel, "both") == 0) {
+        want_nin = 1;
+        want_mk = 1;
+    } else {
+        diag("unknown backend `%s` (expected ninja, make, or both)", sel);
         return 0;
     }
-    if (strcmp(dir, ".") != 0 && thorn_makedirs(dir) != 0)
+
+    if (g_graph.count == 0 && g_graph.cmd_count == 0) {
+        diag("the specification declared no targets");
+        return 0;
+    }
+    if (strcmp(dir, ".") != 0 && makedirs(dir) != 0)
         return 0;
 
     const char *cc = getenv("CC");
@@ -490,14 +609,14 @@ int emit(void)
         ar = "ar";
 
     char np[4096], mp[4096];
-    thorn_join_path(np, sizeof(np), dir, "build.ninja");
-    thorn_join_path(mp, sizeof(mp), dir, "Makefile");
+    join_path(np, sizeof(np), dir, "build.ninja");
+    join_path(mp, sizeof(mp), dir, "Makefile");
 
     int fail = 0;
     if (want_nin)
-        fail |= thorn_emit_ninja(&g_graph, cc, ar, np);
+        fail |= emit_ninja(&g_graph, cc, ar, np);
     if (want_mk)
-        fail |= thorn_emit_makefile(&g_graph, cc, ar, mp);
+        fail |= emit_makefile(&g_graph, cc, ar, mp);
     if (fail)
         return 0;
 
@@ -505,13 +624,22 @@ int emit(void)
     for (size_t i = 0; i < g_graph.count; i++)
         total_sources += g_graph.targets[i].sources.count;
 
-    printf("thorn: configured project `%s` (%zu target%s, %zu "
-           "source%s)\n", g_graph.proj, g_graph.count,
-           g_graph.count == 1 ? "" : "s", total_sources,
-           total_sources == 1 ? "" : "s");
+    if (g_graph.cmd_count > 0) {
+        printf("thorn: configured project `%s` (%zu target%s, %zu source%s, %zu command%s)\n",
+               g_graph.proj, g_graph.count,
+               g_graph.count == 1 ? "" : "s", total_sources,
+               total_sources == 1 ? "" : "s",
+               g_graph.cmd_count,
+               g_graph.cmd_count == 1 ? "" : "s");
+    } else {
+        printf("thorn: configured project `%s` (%zu target%s, %zu source%s)\n",
+               g_graph.proj, g_graph.count,
+               g_graph.count == 1 ? "" : "s", total_sources,
+               total_sources == 1 ? "" : "s");
+    }
     if (want_nin)
-        printf("thorn: wrote %s (build with: samu -f %s or "
-               "ninja -f %s)\n", np, np, np);
+        printf("thorn: wrote %s (build with: samu -f %s or ninja -f %s)\n",
+               np, np, np);
     if (want_mk)
         printf("thorn: wrote %s (build with: make -f %s)\n", mp, mp);
     return 1;
@@ -545,16 +673,6 @@ static const char *type_const(int type)
     }
 }
 
-/*
- * Flat object path for BOTH backends:
- * <target>__<source with '/' folded to '_' and .c swapped to .o>.
- *
- * Flat naming avoids mkdir (portable make) and avoids the dir/file
- * collision of prefixing objects with the target name ("thorn/" as a
- * directory cannot coexist with the "thorn" executable). The
- * decompiler never needs to invert this name: compile edges and
- * recipes carry the true source paths.
- */
 static void obj_name(const Target *t, const char *src, char *out,
                      size_t n)
 {
@@ -568,8 +686,6 @@ static void obj_name(const Target *t, const char *src, char *out,
     snprintf(out, n, "%s__%s", t->name, tmp);
 }
 
-/* "-Iinc -Iinc2 -O2" text: includes first, then bare cflags.
- * Deterministic order that round-trips through the decompiler. */
 static int flags_text(const Target *t, SBuf *b)
 {
     if (sb_init(b) != 0)
@@ -600,17 +716,12 @@ static int ldflags_text(const Target *t, SBuf *b)
     return 0;
 }
 
-/* An emitted OUTPUT name, prefixed with the backend file's directory
- * ("out/artifacts/build.ninja" puts its objects under out/artifacts).
- * Inputs stay project-root relative; the backends run from the root. */
 static void out_name(char *out, size_t n, const char *pfx,
-                      const char *name)
+                     const char *name)
 {
     snprintf(out, n, "%s%s", pfx, name);
 }
 
-/* The artifact name of a target: executables keep the declared name,
- * libraries gain their conventional extension. */
 static void artifact_name(const Target *t, char *out, size_t n)
 {
     if (t->type == THORN_STATIC_LIB)
@@ -625,21 +736,21 @@ static void artifact_name(const Target *t, char *out, size_t n)
 /* Ninja emitter                                                      */
 /* ------------------------------------------------------------------ */
 
-int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
-                     const char *path)
+int emit_ninja(const Graph *g, const char *cc, const char *ar,
+               const char *path)
 {
-    if (g->count == 0) {
-        thorn_diag("no targets declared; nothing to emit");
+    if (g->count == 0 && g->cmd_count == 0) {
+        diag("no targets declared; nothing to emit");
         return 1;
     }
     FILE *f = fopen(path, "w");
     if (!f) {
-        thorn_diag("cannot write %s", path);
+        diag("cannot write %s", path);
         return 1;
     }
 
     char pfx[2048];
-    thorn_dir_prefix(path, pfx, sizeof(pfx));
+    dir_prefix(path, pfx, sizeof(pfx));
 
     fprintf(f, "# build.ninja - generated by thorn " THORN_VERSION
                ", do not edit\n");
@@ -650,32 +761,53 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
     fprintf(f, "cc = %s\n", cc);
     fprintf(f, "ar = %s\n\n", ar);
 
+    /* toolchain rules */
     fprintf(f, "rule cc\n");
-    fprintf(f, "  command = $cc -MD -MF $out.d $cflags -c $in -o "
-               "$out\n");
+    fprintf(f, "  command = $cc $cflags -MMD -MF $out.d -c $in -o $out\n");
     fprintf(f, "  depfile = $out.d\n");
     fprintf(f, "  deps = gcc\n");
-    fprintf(f, "  description = CC $out\n");
-    fprintf(f, "rule ar\n");
-    fprintf(f, "  command = $ar rcs $out $in\n");
-    fprintf(f, "  description = AR $out\n");
+    fprintf(f, "  description = cc $in\n\n");
+
     fprintf(f, "rule link\n");
     fprintf(f, "  command = $cc $in $ldflags -o $out\n");
-    fprintf(f, "  description = LINK $out\n");
+    fprintf(f, "  description = link $out\n\n");
+
     fprintf(f, "rule solink\n");
     fprintf(f, "  command = $cc -shared $in $ldflags -o $out\n");
-    fprintf(f, "  description = SOLINK $out\n\n");
+    fprintf(f, "  description = shared $out\n\n");
 
-    {
-        char all[2048], tgt[2048], aname[512];
+    fprintf(f, "rule ar\n");
+    fprintf(f, "  command = rm -f $out && $ar rcs $out $in\n");
+    fprintf(f, "  description = ar $out\n\n");
+
+    /* custom command rules and edges */
+    for (size_t i = 0; i < g->cmd_count; i++) {
+        const Command *c = &g->commands[i];
+        char cout[2048];
+        out_name(cout, sizeof(cout), pfx, c->output);
+        fprintf(f, "# custom command %zu (%s)\n", i + 1, c->output);
+        fprintf(f, "rule cmd_%zu\n", i + 1);
+        fprintf(f, "  command = %s\n", c->command);
+        fprintf(f, "  description = %s\n\n", c->command);
+        if (c->input[0])
+            fprintf(f, "build %s: cmd_%zu %s\n\n", cout, i + 1, c->input);
+        else
+            fprintf(f, "build %s: cmd_%zu\n\n", cout, i + 1);
+    }
+
+    /* default target aggregation */
+    if (g->count > 0) {
+        char all[2048];
         out_name(all, sizeof(all), pfx, "thorn_all");
-        fprintf(f, "build %s_%s: phony", all, g->proj);
+        fprintf(f, "build %s: phony", all);
         for (size_t i = 0; i < g->count; i++) {
+            char tgt[2048], aname[512];
             artifact_name(&g->targets[i], aname, sizeof(aname));
             out_name(tgt, sizeof(tgt), pfx, aname);
             fprintf(f, " %s", tgt);
         }
-        fprintf(f, "\ndefault %s_%s\n\n", all, g->proj);
+        fprintf(f, "\n");
+        fprintf(f, "default %s\n\n", all);
     }
 
     for (size_t i = 0; i < g->count; i++) {
@@ -691,12 +823,9 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
         for (size_t s = 0; s < t->sources.count; s++) {
             const char *src = t->sources.items[s];
             if (!is_c_source(src))
-                continue;   /* raw link input, appears on the edge */
+                continue;
             obj_name(t, src, obj, sizeof(obj));
             fprintf(f, "build %s%s: cc %s", pfx, obj, src);
-            /* order-only deps on compile edges: build the generated
-             * prerequisite first, but header regeneration must not
-             * recompile the world (ninja order-only semantics) */
             for (size_t d = 0; d < t->order_deps.count; d++)
                 fprintf(f, " || %s", t->order_deps.items[d]);
             fprintf(f, "\n");
@@ -717,8 +846,6 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
                 fprintf(f, " %s", src);
             }
         }
-        /* order deps on link edges are implicit inputs: a regenerated
-         * prereq (or a refreshed prebuilt object) must relink */
         for (size_t d = 0; d < t->order_deps.count; d++)
             fprintf(f, " | %s", t->order_deps.items[d]);
         fprintf(f, "\n");
@@ -741,13 +868,44 @@ int thorn_emit_ninja(const Graph *g, const char *cc, const char *ar,
 /* Makefile emitter                                                   */
 /* ------------------------------------------------------------------ */
 
-/* The lean case: one target, every source a flat .c file, no order
- * deps. Objects then share source names, so a single portable
- * pattern rule compiles them. Otherwise explicit per-object rules
- * are emitted (correct everywhere, including strict POSIX make). */
+static void subst_cmd_for_make(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < n; ) {
+        if (in[i] == '$') {
+            if (in[i + 1] == '$') {
+                if (o + 2 < n) {
+                    out[o++] = '$';
+                    out[o++] = '$';
+                }
+                i += 2;
+                continue;
+            }
+            if (strncmp(in + i, "$out", 4) == 0) {
+                if (o + 2 < n) {
+                    out[o++] = '$';
+                    out[o++] = '@';
+                }
+                i += 4;
+                continue;
+            }
+            if (strncmp(in + i, "$in", 3) == 0) {
+                if (o + 2 < n) {
+                    out[o++] = '$';
+                    out[o++] = '<';
+                }
+                i += 3;
+                continue;
+            }
+        }
+        out[o++] = in[i++];
+    }
+    out[o] = '\0';
+}
+
 static int make_uses_pattern(const Graph *g)
 {
-    if (g->count != 1)
+    if (g->count != 1 || g->cmd_count > 0)
         return 0;
     Target *t = &g->targets[0];
     if (t->order_deps.count > 0)
@@ -759,21 +917,21 @@ static int make_uses_pattern(const Graph *g)
     return 1;
 }
 
-int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
-                        const char *path)
+int emit_makefile(const Graph *g, const char *cc, const char *ar,
+                  const char *path)
 {
-    if (g->count == 0) {
-        thorn_diag("no targets declared; nothing to emit");
+    if (g->count == 0 && g->cmd_count == 0) {
+        diag("no targets declared; nothing to emit");
         return 1;
     }
     FILE *f = fopen(path, "w");
     if (!f) {
-        thorn_diag("cannot write %s", path);
+        diag("cannot write %s", path);
         return 1;
     }
     int pattern = make_uses_pattern(g);
     char pfx[2048];
-    thorn_dir_prefix(path, pfx, sizeof(pfx));
+    dir_prefix(path, pfx, sizeof(pfx));
 
     fprintf(f, "# Makefile - generated by thorn " THORN_VERSION
                ", do not edit\n");
@@ -801,30 +959,45 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
             fprintf(f, " %s%s", pfx, obj);
         }
         fprintf(f, "\n");
+
         SBuf ctext;
         flags_text(t, &ctext);
-        if (ctext.len > 0)
-            fprintf(f, "%s_CFLAGS = %s\n", t->name, ctext.buf);
+        fprintf(f, "%s_CFLAGS = %s\n", t->name, ctext.buf);
         sb_free(&ctext);
-        if (t->type != THORN_STATIC_LIB && t->ldflags.count > 0) {
-            SBuf lt;
-            ldflags_text(t, &lt);
-            fprintf(f, "%s_LDFLAGS = %s\n", t->name, lt.buf);
-            sb_free(&lt);
+
+        SBuf lt;
+        ldflags_text(t, &lt);
+        fprintf(f, "%s_LDFLAGS = %s\n\n", t->name, lt.buf);
+        sb_free(&lt);
+    }
+
+    /* all (default rule) */
+    if (g->count > 0) {
+        fprintf(f, "all:");
+        for (size_t i = 0; i < g->count; i++) {
+            char tname[2048], aname[512];
+            artifact_name(&g->targets[i], aname, sizeof(aname));
+            out_name(tname, sizeof(tname), pfx, aname);
+            fprintf(f, " %s", tname);
         }
-        fprintf(f, "\n");
+        fprintf(f, "\n\n");
     }
 
-    /* all: the aggregate */
-    fprintf(f, "all:");
-    for (size_t i = 0; i < g->count; i++) {
-        char aname[512];
-        artifact_name(&g->targets[i], aname, sizeof(aname));
-        fprintf(f, " %s%s", pfx, aname);
+    /* custom command rules */
+    for (size_t i = 0; i < g->cmd_count; i++) {
+        const Command *c = &g->commands[i];
+        char cout[2048];
+        out_name(cout, sizeof(cout), pfx, c->output);
+        char make_cmd[2048];
+        subst_cmd_for_make(c->command, make_cmd, sizeof(make_cmd));
+        if (c->input[0])
+            fprintf(f, "%s: %s\n", cout, c->input);
+        else
+            fprintf(f, "%s:\n", cout);
+        fprintf(f, "\t%s\n\n", make_cmd);
     }
-    fprintf(f, "\n\n");
 
-    /* link/archive rules */
+    /* link rules */
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
         char tname[2048], aname[512];
@@ -841,8 +1014,8 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
             fprintf(f, "\t$(AR) rcs $@ $^\n\n");
         } else if (t->type == THORN_SHARED_LIB) {
             if (t->ldflags.count > 0)
-                fprintf(f, "\t$(CC) -shared $^ $(%s_LDFLAGS) -o "
-                           "$@\n\n", t->name);
+                fprintf(f, "\t$(CC) -shared $^ $(%s_LDFLAGS) -o $@\n\n",
+                        t->name);
             else
                 fprintf(f, "\t$(CC) -shared $^ -o $@\n\n");
         } else {
@@ -877,11 +1050,10 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
                     fprintf(f, " %s", t->order_deps.items[d]);
                 fprintf(f, "\n");
                 if (t->cflags.count > 0 || t->includes.count > 0)
-                    fprintf(f, "\t$(CC) $(%s_CFLAGS) -MMD -MP -c %s "
-                               "-o $@\n\n", t->name, src);
+                    fprintf(f, "\t$(CC) $(%s_CFLAGS) -MMD -MP -c %s -o $@\n\n",
+                            t->name, src);
                 else
-                    fprintf(f, "\t$(CC) -MMD -MP -c %s -o $@\n\n",
-                            src);
+                    fprintf(f, "\t$(CC) -MMD -MP -c %s -o $@\n\n", src);
             }
         }
     }
@@ -911,6 +1083,11 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
         artifact_name(t, aname, sizeof(aname));
         out_name(tname, sizeof(tname), pfx, aname);
         fprintf(f, " %s", tname);
+    }
+    for (size_t i = 0; i < g->cmd_count; i++) {
+        char cout[2048];
+        out_name(cout, sizeof(cout), pfx, g->commands[i].output);
+        fprintf(f, " %s", cout);
     }
     fprintf(f, "\n\n");
 
@@ -945,37 +1122,47 @@ int thorn_emit_makefile(const Graph *g, const char *cc, const char *ar,
 /* build.thorn printer (used by thorn decompile)                      */
 /* ------------------------------------------------------------------ */
 
-int thorn_print_spec(const Graph *g, FILE *out, const char **notes,
-                     size_t nnotes)
+int print_spec(const Graph *g, FILE *out, const char **notes,
+               size_t nnotes)
 {
     fprintf(out, "# build.thorn - generated by thorn " THORN_VERSION
                  "\n");
     fprintf(out, "# decompiled from an existing build graph; review "
                  "before use\n\n");
-    fprintf(out, "thorn_engine.project(\"%s\")\n\n", g->proj);
+    fprintf(out, "engine.project(\"%s\")\n", g->proj);
+    if (g->backend[0])
+        fprintf(out, "engine.backend(\"%s\")\n", g->backend);
+    fprintf(out, "\n");
 
     for (size_t i = 0; i < g->count; i++) {
         Target *t = &g->targets[i];
-        fprintf(out, "thorn_engine.add_target(\"%s\", "
-                     "thorn_engine.%s)\n", t->name,
-                type_const(t->type));
+        fprintf(out, "engine.add_target(\"%s\", engine.%s)\n",
+                t->name, type_const(t->type));
         for (size_t s = 0; s < t->sources.count; s++)
-            fprintf(out, "thorn_engine.add_source(\"%s\", \"%s\")\n",
+            fprintf(out, "engine.add_source(\"%s\", \"%s\")\n",
                     t->name, t->sources.items[s]);
         for (size_t s = 0; s < t->includes.count; s++)
-            fprintf(out, "thorn_engine.add_include(\"%s\", \"%s\")\n",
+            fprintf(out, "engine.add_include(\"%s\", \"%s\")\n",
                     t->name, t->includes.items[s]);
         for (size_t s = 0; s < t->cflags.count; s++)
-            fprintf(out, "thorn_engine.add_cflag(\"%s\", \"%s\")\n",
+            fprintf(out, "engine.add_cflag(\"%s\", \"%s\")\n",
                     t->name, t->cflags.items[s]);
         for (size_t s = 0; s < t->ldflags.count; s++)
-            fprintf(out, "thorn_engine.add_ldflag(\"%s\", \"%s\")\n",
+            fprintf(out, "engine.add_ldflag(\"%s\", \"%s\")\n",
                     t->name, t->ldflags.items[s]);
         for (size_t s = 0; s < t->order_deps.count; s++)
-            fprintf(out, "thorn_engine.add_order_dep(\"%s\", \"%s\")"
-                         "\n", t->name, t->order_deps.items[s]);
+            fprintf(out, "engine.add_order_dep(\"%s\", \"%s\")\n",
+                    t->name, t->order_deps.items[s]);
         fprintf(out, "\n");
     }
+
+    for (size_t i = 0; i < g->cmd_count; i++) {
+        Command *c = &g->commands[i];
+        fprintf(out, "engine.add_command(\"%s\", \"%s\", \"%s\")\n",
+                c->output, c->command, c->input);
+    }
+    if (g->cmd_count > 0)
+        fprintf(out, "\n");
 
     for (size_t i = 0; i < nnotes; i++)
         fprintf(out, "\n# note: %s\n", notes[i]);
