@@ -1,0 +1,346 @@
+/* ==========================================================================
+   The Pith Reference - Custom Modern Design Theme (Sharp Brutalist Aesthetic)
+   ========================================================================== */
+
+:root {
+    --sidebar-target-width: 320px;
+    --content-max-width: 900px;
+    --code-font-size: 1.52rem;
+
+    --pith-primary: #10b981;
+    --pith-primary-dark: #059669;
+    --pith-primary-light: #34d399;
+    --pith-accent: #06b6d4;
+    --pith-code-bg: #1e1e2e;
+    --pith-font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* --------------------------------------------------------------------------
+   Global Sharp Corners (No Rounded Corners)
+   -------------------------------------------------------------------------- */
+
+*, *::before, *::after {
+    border-radius: 0 !important;
+}
+
+/* --------------------------------------------------------------------------
+   Typography & Base Styles (1rem = 10px in mdBook reset)
+   -------------------------------------------------------------------------- */
+
+body {
+    font-size: 1.7rem; /* 17px */
+    line-height: 1.76;
+    letter-spacing: -0.01em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-top: 1.8em;
+    margin-bottom: 0.6em;
+}
+
+h1 {
+    font-size: 3.4rem; /* 34px */
+    line-height: 1.25;
+    padding-bottom: 0.35em;
+    border-bottom: 2px solid rgba(16, 185, 129, 0.25);
+    margin-top: 0.5em;
+}
+
+h2 {
+    font-size: 2.4rem; /* 24px */
+    line-height: 1.35;
+    margin-top: 1.9em;
+}
+
+h3 {
+    font-size: 1.95rem; /* 19.5px */
+    margin-top: 1.5em;
+}
+
+h4 {
+    font-size: 1.7rem; /* 17px */
+}
+
+p, ul, ol {
+    margin-top: 0.9em;
+    margin-bottom: 0.9em;
+}
+
+li {
+    margin-top: 0.35em;
+    margin-bottom: 0.35em;
+}
+
+a {
+    color: var(--pith-primary-dark);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.15s ease, border-color 0.15s ease;
+    border-bottom: 1px dotted rgba(16, 185, 129, 0.4);
+}
+
+.coal a, .navy a, .ayu a {
+    color: var(--pith-primary-light);
+}
+
+a:hover {
+    color: var(--pith-primary);
+    border-bottom-style: solid;
+}
+
+/* --------------------------------------------------------------------------
+   Code & Preformatted Blocks (Square & Sharp)
+   -------------------------------------------------------------------------- */
+
+code {
+    font-family: var(--pith-font-mono);
+    font-size: 0.92em;
+    padding: 0.22em 0.5em;
+    border-radius: 0 !important;
+    background-color: rgba(125, 125, 125, 0.14);
+    font-feature-settings: "calt" 1, "liga" 1;
+}
+
+pre {
+    border-radius: 0 !important;
+    padding: 1.25em 1.5em;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    position: relative;
+    border: 1px solid rgba(125, 125, 125, 0.22);
+    margin: 1.5em 0;
+}
+
+pre code {
+    padding: 0;
+    background: transparent !important;
+    border-radius: 0 !important;
+    font-size: 1.52rem;
+    line-height: 1.68;
+}
+
+/* Copy button styling (Square) */
+.copy-button {
+    border-radius: 0 !important;
+    opacity: 0.7;
+    transition: all 0.2s ease;
+    top: 8px;
+    right: 8px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+}
+
+.copy-button:hover {
+    opacity: 1;
+    background: rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+/* --------------------------------------------------------------------------
+   Tables (Square & Crisp)
+   -------------------------------------------------------------------------- */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    border-radius: 0 !important;
+    overflow: hidden;
+    margin: 1.8em 0;
+    border: 1px solid rgba(125, 125, 125, 0.25);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+table th {
+    background-color: rgba(16, 185, 129, 0.09);
+    font-weight: 600;
+    text-align: left;
+    padding: 13px 18px;
+    font-size: 1.6rem;
+    border-bottom: 2px solid rgba(16, 185, 129, 0.25);
+    border-radius: 0 !important;
+}
+
+table td {
+    padding: 12px 18px;
+    border-top: 1px solid rgba(125, 125, 125, 0.14);
+    font-size: 1.55rem;
+    border-radius: 0 !important;
+}
+
+table tr:hover td {
+    background-color: rgba(16, 185, 129, 0.035);
+}
+
+/* --------------------------------------------------------------------------
+   Callout Badges & Blockquotes (Square)
+   -------------------------------------------------------------------------- */
+
+blockquote {
+    border-left: 4px solid var(--pith-primary);
+    background-color: rgba(16, 185, 129, 0.07);
+    margin: 1.6em 0;
+    padding: 1em 1.4em;
+    border-radius: 0 !important;
+    font-size: 1.65rem;
+}
+
+blockquote p {
+    margin: 0.35em 0;
+}
+
+.badge {
+    display: inline-block;
+    font-family: var(--pith-font-mono);
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 0.2rem 0.65rem;
+    border-radius: 0 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--pith-primary-dark);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    vertical-align: middle;
+}
+
+.coal .badge, .navy .badge, .ayu .badge {
+    color: var(--pith-primary-light);
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar & Navigation (Square)
+   -------------------------------------------------------------------------- */
+
+.sidebar {
+    font-size: 1.55rem;
+}
+
+.sidebar .part-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--pith-primary-dark);
+    margin-top: 1.8em;
+    margin-bottom: 0.5em;
+    padding-left: 12px;
+}
+
+.coal .sidebar .part-title, .navy .sidebar .part-title, .ayu .sidebar .part-title {
+    color: var(--pith-primary-light);
+}
+
+.sidebar ol.chapter li a {
+    padding: 5px 12px;
+    line-height: 1.4;
+    border-radius: 0 !important;
+}
+
+.sidebar ol.chapter li a.active {
+    color: var(--pith-primary);
+    font-weight: 700;
+    border-left: 3px solid var(--pith-primary);
+    padding-left: 9px;
+    background-color: rgba(16, 185, 129, 0.08);
+    border-radius: 0 !important;
+}
+
+/* --------------------------------------------------------------------------
+   Search Bar (Square)
+   -------------------------------------------------------------------------- */
+
+#searchbar {
+    font-size: 1.6rem;
+    border-radius: 0 !important;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    padding: 0.7em 1.1em;
+    transition: all 0.2s ease;
+}
+
+#searchbar:focus {
+    border-color: var(--pith-primary);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+    border-radius: 0 !important;
+}
+
+/* --------------------------------------------------------------------------
+   Keyboard Shortcuts & Buttons (Square)
+   -------------------------------------------------------------------------- */
+
+kbd {
+    font-family: var(--pith-font-mono);
+    font-size: 1.35rem;
+    background: rgba(125, 125, 125, 0.15);
+    border: 1px solid rgba(125, 125, 125, 0.3);
+    border-radius: 0 !important;
+    padding: 2px 7px;
+    box-shadow: none;
+}
+
+button, input, select, textarea {
+    border-radius: 0 !important;
+}
+
+/* --------------------------------------------------------------------------
+   Menu Bar & Icon Buttons (Perfect Vertical Alignment)
+   -------------------------------------------------------------------------- */
+
+#mdbook-menu-bar {
+    display: flex;
+    align-items: center;
+    height: var(--menu-bar-height);
+}
+
+.left-buttons,
+.right-buttons {
+    display: flex !important;
+    align-items: center !important;
+    height: var(--menu-bar-height) !important;
+}
+
+#mdbook-menu-bar .icon-button,
+#mdbook-menu-bar .right-buttons a {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: var(--menu-bar-height) !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--icons) !important;
+    font-family: inherit !important;
+    font-size: 1.8rem !important;
+    line-height: 1 !important;
+    box-sizing: border-box !important;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: color 0.2s ease;
+}
+
+#mdbook-menu-bar .icon-button:hover,
+#mdbook-menu-bar .right-buttons a:hover {
+    color: var(--icons-hover) !important;
+}
+
+#mdbook-menu-bar .fa-svg {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 1em !important;
+    height: 1em !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    line-height: 1 !important;
+    font-size: inherit !important;
+}
+
+#mdbook-menu-bar .fa-svg svg {
+    display: block !important;
+    width: 1em !important;
+    height: 1em !important;
+    margin: 0 !important;
+    fill: currentColor !important;
+}
+
