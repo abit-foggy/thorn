@@ -1,6 +1,6 @@
 # thorn
 
-A lean meta-build generator that embeds The Pith Programming Language. Minimal, zero-bloat, deterministic, in the Unix spirit.
+A C and supersets meta-generator for Ninja and POSIX Make; written in C99
 
 [![CI](https://github.com/abit-foggy/thorn/actions/workflows/ci.yml/badge.svg)](https://github.com/abit-foggy/thorn/actions)
 [![Documentation](https://img.shields.io/badge/docs-mdBook-emerald.svg)](https://abit-foggy.github.io/thorn/)
