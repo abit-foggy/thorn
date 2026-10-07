@@ -1,13 +1,8 @@
-name: CI
+name: Stable Release
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    # Nightly build at 00:00 UTC
-    - cron: '0 0 * * *'
+    branches: [ stable ]
   workflow_dispatch:
 
 permissions:
@@ -51,12 +46,11 @@ jobs:
       - name: Run Verification Suite
         run: ./tests/verify.sh
 
-      - name: Package Nightly Artifacts
-        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: Package Stable Artifacts
         run: |
           mkdir -p dist
           install -m 0755 out/thorn dist/thorn
-          STAGE="thorn-x86_64-linux-nightly"
+          STAGE="thorn-x86_64-linux"
           mkdir -p "$STAGE/include"
           install -m 0755 out/thorn "$STAGE/thorn"
           if [ -f out/artifacts/thorn_core.a ]; then
@@ -65,20 +59,18 @@ jobs:
           install -m 0644 src/include/*.h "$STAGE/include/"
           install -m 0644 LICENSE "$STAGE/LICENSE" 2>/dev/null || true
           install -m 0644 README.md "$STAGE/README.md" 2>/dev/null || true
-          tar -czf "dist/thorn-x86_64-linux-nightly.tar.gz" -C "$STAGE" .
+          tar -czf "dist/thorn-x86_64-linux.tar.gz" -C "$STAGE" .
           rm -rf "$STAGE"
 
-      - name: Upload Nightly Artifacts
-        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: Upload Stable Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-ubuntu-latest
+          name: artifacts-stable
           path: dist/*
 
   release:
-    name: publish nightly release
+    name: publish stable release
     needs: test
-    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,17 +88,17 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Prune Non-nightly Release Assets
+      - name: Prune Non-stable Release Assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for asset in $(gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null || true); do
+          for asset in $(gh release view stable --json assets --jq '.assets[].name' 2>/dev/null || true); do
             case "$asset" in
-              thorn|*-nightly.tar.gz|SHA256SUMS.txt) ;;
+              thorn|*.tar.gz|SHA256SUMS.txt) ;;
               *)
                 echo "Removing obsolete release asset: $asset"
-                gh release delete-asset nightly "$asset" -y || true
+                gh release delete-asset stable "$asset" -y || true
                 ;;
             esac
           done
@@ -115,18 +107,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: nightly
-          name: "Thorn Nightly Build"
-          prerelease: true
+          tag_name: stable
+          name: "Thorn Stable Release"
+          prerelease: false
           draft: false
-          make_latest: false
+          make_latest: true
           body: |
-            Automated rolling nightly build for Thorn.
+            Official rolling stable release for Thorn.
 
-            Updated automatically from the `main` branch.
+            ### Quick Install
+            ```bash
+            # Change TAG=stable to TAG=nightly for the nightly build
+            curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=stable bash
+            ```
 
             ### Verification
-            Verify downloaded archive integrity using the included `SHA256SUMS.txt`:
+            Verify downloaded archive/binary integrity using the included `SHA256SUMS.txt`:
             ```bash
             sha256sum -c SHA256SUMS.txt
             ```

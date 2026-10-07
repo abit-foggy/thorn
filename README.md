@@ -6,6 +6,13 @@ A lean meta-build generator that embeds The Pith Programming Language. Minimal, 
 [![Documentation](https://img.shields.io/badge/docs-mdBook-emerald.svg)](https://abit-foggy.github.io/thorn/)
 [![License](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
 
+## Installation
+
+```bash
+# Change TAG=stable to TAG=nightly for the nightly build
+curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=stable bash
+```
+
 ## Links
 
 - **Documentation**: [https://abit-foggy.github.io/thorn/](https://abit-foggy.github.io/thorn/)
