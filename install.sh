@@ -56,7 +56,11 @@ fi
 
 # Locate existing installed binary if any
 INSTALLED_BIN=""
-if command -v thorn >/dev/null 2>&1; then
+if [ -n "$PREFIX" ]; then
+    if [ -f "$TARGET_DIR/thorn" ]; then
+        INSTALLED_BIN="$TARGET_DIR/thorn"
+    fi
+elif command -v thorn >/dev/null 2>&1; then
     INSTALLED_BIN="$(command -v thorn)"
 elif [ -f "$TARGET_DIR/thorn" ]; then
     INSTALLED_BIN="$TARGET_DIR/thorn"
