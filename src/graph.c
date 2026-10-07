@@ -1,10 +1,6 @@
 #include "include/graph.h"
 
 /* Diagnostics */
-__attribute__((weak))
-void pith_emit_diagnostic(const char *severity, const char *message,
-                          const char *filepath, const char *source,
-                          size_t line, size_t col, size_t span);
 
 int g_errors = 0;
 
@@ -29,10 +25,7 @@ void diag(const char *fmt, ...)
     if (strcmp(sev, "error") == 0)
         g_errors++;
 
-    if (pith_emit_diagnostic)
-        pith_emit_diagnostic(sev, msg, NULL, NULL, 0, 0, 0);
-    else
-        fprintf(stderr, "%s: %s\n", sev, msg);
+    fprintf(stderr, "%s: %s\n", sev, msg);
     fflush(stderr);
 }
 
