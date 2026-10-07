@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout thorn
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libelf-dev libssl-dev bc bison flex build-essential
+          git clone --depth 1 https://github.com/michaelforney/samurai /tmp/samurai
+          make -C /tmp/samurai
+          sudo install -m 755 /tmp/samurai/samu /usr/local/bin/samu
+
+      - name: Build and Install Vendored Pith & QBE
+        run: |
+          make -C vendor/pith
+          sudo install -m 755 vendor/pith/pith /usr/local/bin/pith
+          sudo mkdir -p /usr/local/lib/pith/runtime
+          sudo install -m 644 vendor/pith/runtime/libruntime.a /usr/local/lib/pith/runtime/libruntime.a
+          sudo mkdir -p /usr/local/lib/pith/tcc/include
+          sudo cp -r vendor/pith/vendor/tcc/include/* /usr/local/lib/pith/tcc/include/
+          if [ -f vendor/pith/vendor/tcc/libtcc1.a ]; then
+            sudo install -m 644 vendor/pith/vendor/tcc/libtcc1.a /usr/local/lib/pith/tcc/libtcc1.a
+          fi
+          make -C vendor/pith/vendor/qbe
+          sudo install -m 755 vendor/pith/vendor/qbe/qbe /usr/local/bin/qbe
+
+      - name: Build Thorn
+        run: make
+
+      - name: Run Verification Suite
+        run: ./tests/verify.sh
