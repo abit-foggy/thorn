@@ -1,14 +1,14 @@
 # Specification Reference
 
-Thorn specifications are written in Pith script (`build.thorn`). The Thorn host engine registers the `engine` namespace with typed functions and constants.
+Thorn specifications are written in Pith script (`build.thorn` or `.thorn`). The Thorn host engine registers the `engine` namespace with typed functions and constants.
 
-## Constants
+## Target Types
 
-Target types passed to `engine.add_target`:
+Target types configured via `engine.add_target`:
 
-- `engine.exe` (`0`) — Executable binary.
-- `engine.static_lib` (`1`) — Static library (`.a`).
-- `engine.shared_lib` (`2`) — Dynamic/shared library (`.so`).
+- `engine.exe` — Executable binary.
+- `engine.static_lib` — Static library archive (`.a`).
+- `engine.shared_lib` — Dynamic/shared library (`.so`).
 
 ## Project & Backend Configuration
 
@@ -39,10 +39,15 @@ engine.add_target("mylib", engine.static_lib)
 ```
 
 ### `engine.add_source(target: str, source_path: str)`
-Associates a C source file (`.c`) with a target. Object files are automatically computed in the output directory.
+Associates a source file with a target. Thorn automatically classifies the source kind based on file extension:
+- `.c`: C source compiled with the C compiler rule (`cc`).
+- `.s`: Raw assembly assembled via the assembly rule (`as`).
+- `.S`: Assembly with C preprocessor directives, compiled via the preprocessed assembly rule (`as_cpp`).
+
 ```pith
 engine.add_source("myapp", "src/main.c")
-engine.add_source("myapp", "src/util.c")
+engine.add_source("myapp", "src/arch/bootstub.S")
+engine.add_source("myapp", "src/arch/trampoline.s")
 ```
 
 ### `engine.add_include(target: str, include_path: str)`
@@ -52,10 +57,17 @@ engine.add_include("myapp", "src/include")
 ```
 
 ### `engine.add_cflag(target: str, flag: str)`
-Appends a C compiler flag for compiling sources of this target.
+Appends a C compiler flag used when compiling C sources (`.c`) of this target.
 ```pith
 engine.add_cflag("myapp", "-Wall")
 engine.add_cflag("myapp", "-O2")
+```
+
+### `engine.add_asflag(target: str, flag: str)`
+Appends an assembler/preprocessor flag used when compiling assembly sources (`.s`, `.S`) of this target.
+```pith
+engine.add_asflag("myapp", "-Wa,--noexecstack")
+engine.add_asflag("myapp", "-D__ASSEMBLY__")
 ```
 
 ### `engine.add_ldflag(target: str, flag: str)`
@@ -90,7 +102,15 @@ When emitting Ninja, the rule is emitted as `cmd = <command>` with `$in` and `$o
 ## Package Configuration
 
 ### `engine.pkg_config(target: str, package_name: str)`
-Queries system `pkg-config` at build-generation time and automatically appends `--cflags` to `cflags` and `--libs` to `ldflags` for the target.
+Queries system `pkg-config` at build-generation time and automatically appends `--cflags` to compiler flags and `--libs` to linker flags for the target.
 ```pith
 engine.pkg_config("myapp", "libssl")
+```
+
+## Emission
+
+### `engine.emit()`
+Dispatches graph emission to the chosen backend(s). When running `thorn`, this call is automatically appended as an epilogue to `build.thorn` if not explicitly called.
+```pith
+engine.emit()
 ```

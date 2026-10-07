@@ -1,2 +1,7 @@
 book/
 .DS_Store
+out/
+vendor/
+tests/
+.ninja_deps
+.ninja_log
