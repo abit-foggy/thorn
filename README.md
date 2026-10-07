@@ -1,6 +1,6 @@
 # thorn
 
-A lean meta-build generator that embeds The Pith Programming Language. Minimal, zero-bloat, deterministic, in the QBE spirit.
+A lean meta-build generator that embeds The Pith Programming Language. Minimal, zero-bloat, deterministic, in the Unix spirit.
 
 [![CI](https://github.com/abit-foggy/thorn/actions/workflows/ci.yml/badge.svg)](https://github.com/abit-foggy/thorn/actions)
 [![Documentation](https://img.shields.io/badge/docs-mdBook-emerald.svg)](https://abit-foggy.github.io/thorn/)

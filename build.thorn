@@ -27,6 +27,7 @@ engine.add_cflag("thorn_core", "-Dshared_lib=c_engine_shared_lib")
 engine.add_cflag("thorn_core", "-Dadd_target=c_engine_add_target")
 engine.add_cflag("thorn_core", "-Dadd_source=c_engine_add_source")
 engine.add_cflag("thorn_core", "-Dadd_cflag=c_engine_add_cflag")
+engine.add_cflag("thorn_core", "-Dadd_asflag=c_engine_add_asflag")
 engine.add_cflag("thorn_core", "-Dadd_ldflag=c_engine_add_ldflag")
 engine.add_cflag("thorn_core", "-Dadd_include=c_engine_add_include")
 engine.add_cflag("thorn_core", "-Dadd_order_dep=c_engine_add_order_dep")
@@ -35,6 +36,7 @@ engine.add_cflag("thorn_core", "-Dpkg_config=c_engine_pkg_config")
 engine.add_cflag("thorn_core", "-Demit=c_engine_emit")
 
 # thorn_core includes
+engine.add_include("thorn_core", "src/include")
 engine.add_include("thorn_core", "vendor/pith/include")
 
 # thorn executable target

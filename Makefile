@@ -23,6 +23,7 @@ RENAME_DEFS = \
 	-Dadd_target=c_engine_add_target \
 	-Dadd_source=c_engine_add_source \
 	-Dadd_cflag=c_engine_add_cflag \
+	-Dadd_asflag=c_engine_add_asflag \
 	-Dadd_ldflag=c_engine_add_ldflag \
 	-Dadd_include=c_engine_add_include \
 	-Dadd_order_dep=c_engine_add_order_dep \
@@ -36,24 +37,22 @@ CFLAGS = -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
 all: $(OUT)/thorn
 
 pith-check:
-	@test -x $(PITH_ROOT)/pith || { \
-		echo "error: $(PITH_ROOT)/pith is missing - run 'make' there first"; \
-		exit 1; }
-	@test -f $(PITH_ROOT)/runtime/libruntime.a || { \
-		echo "error: $(PITH_ROOT)/runtime/libruntime.a is missing"; \
-		exit 1; }
+	@if [ ! -x $(PITH_ROOT)/pith ] || [ ! -f $(PITH_ROOT)/runtime/libruntime.a ]; then \
+		make -C $(PITH_ROOT); \
+	fi
 
 $(ART)/engine.o: src/engine.c src/include/engine.h pith-check
 	mkdir -p $(ART)
-	$(CC) $(CFLAGS) $(RENAME_DEFS) -I$(PITH_INC) -c src/engine.c -o $@
+	$(CC) $(CFLAGS) $(RENAME_DEFS) -Isrc/include -I$(PITH_INC) -c src/engine.c -o $@
 
 $(ART)/decompile.o: src/decompile.c src/include/engine.h pith-check
 	mkdir -p $(ART)
-	$(CC) $(CFLAGS) -DTHORN_CORE_BUILD -I$(PITH_INC) -c src/decompile.c -o $@
+	$(CC) $(CFLAGS) -DTHORN_CORE_BUILD -Isrc/include -I$(PITH_INC) -c src/decompile.c -o $@
 
 $(ART)/main.o: src/main.c src/include/engine.h pith-check
 	mkdir -p $(ART)
-	$(CC) $(CFLAGS) -I$(PITH_INC) -c src/main.c -o $@
+	RT=$$(cd $(PITH_ROOT) && pwd)/runtime/libruntime.a; \
+	$(CC) $(CFLAGS) -Isrc/include -I$(PITH_INC) -DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -c src/main.c -o $@
 
 $(OUT)/thorn: $(ART)/main.o $(ART)/engine.o \
 	$(ART)/decompile.o $(PITH_FRONT) $(PITH_LIBS)

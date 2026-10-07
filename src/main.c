@@ -20,6 +20,7 @@ extern int c_engine_shared_lib(void);
 extern int c_engine_add_target(PithValue *name, int type);
 extern int c_engine_add_source(PithValue *target, PithValue *src);
 extern int c_engine_add_cflag(PithValue *target, PithValue *flag);
+extern int c_engine_add_asflag(PithValue *target, PithValue *flag);
 extern int c_engine_add_ldflag(PithValue *target, PithValue *flag);
 extern int c_engine_add_include(PithValue *target, PithValue *dir);
 extern int c_engine_add_order_dep(PithValue *target, PithValue *prereq);
@@ -44,6 +45,7 @@ int host_register(PithContext *ctx)
         { "add_target",    c_engine_add_target,    "pw"  },
         { "add_source",    c_engine_add_source,    "pp"  },
         { "add_cflag",     c_engine_add_cflag,     "pp"  },
+        { "add_asflag",    c_engine_add_asflag,    "pp"  },
         { "add_ldflag",    c_engine_add_ldflag,    "pp"  },
         { "add_include",   c_engine_add_include,   "pp"  },
         { "add_order_dep", c_engine_add_order_dep, "pp"  },
@@ -190,6 +192,26 @@ static int cmd_decompile(const char *in, const char *out)
 }
 
 /* Resolve and register the fallback link object for the context. */
+static void get_binary_dir(const char *argv0, char *out_dir, size_t out_sz)
+{
+    char exe[4096] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len > 0) {
+        exe[len] = '\0';
+        char *slash = strrchr(exe, '/');
+        if (slash) *slash = '\0';
+        snprintf(out_dir, out_sz, "%s", exe);
+        return;
+    }
+    if (argv0 && strchr(argv0, '/')) {
+        snprintf(out_dir, out_sz, "%s", argv0);
+        char *slash = strrchr(out_dir, '/');
+        if (slash) *slash = '\0';
+        return;
+    }
+    snprintf(out_dir, out_sz, ".");
+}
+
 static void register_link_obj(PithContext *ctx, const char *argv0)
 {
     const char *obj = getenv("THORN_LINK_OBJ");
@@ -200,13 +222,7 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
         return;
     }
     char path[4096];
-    snprintf(path, sizeof(path), "%s",
-             argv0 && *argv0 ? argv0 : "./thorn");
-    char *slash = strrchr(path, '/');
-    if (slash)
-        *slash = '\0';
-    else
-        snprintf(path, sizeof(path), ".");
+    get_binary_dir(argv0, path, sizeof(path));
     char cand[8192];
 
     /* Check out/artifacts/engine.o */
@@ -223,6 +239,12 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
     }
     /* Check engine.o beside binary */
     snprintf(cand, sizeof(cand), "%s/engine.o", path);
+    if (access(cand, R_OK) == 0) {
+        pith_register_link_object(ctx, cand);
+        return;
+    }
+    /* Fallback default relative or hardcoded path */
+    snprintf(cand, sizeof(cand), "/home/foggy/thorn/out/artifacts/engine.o");
     pith_register_link_object(ctx, cand);
 }
 
@@ -242,13 +264,7 @@ static void configure_runtime_env(const char *argv0)
         return;
     }
     char path[4096];
-    snprintf(path, sizeof(path), "%s",
-             argv0 && *argv0 ? argv0 : "thorn");
-    char *slash = strrchr(path, '/');
-    if (slash)
-        *slash = '\0';
-    else
-        snprintf(path, sizeof(path), ".");
+    get_binary_dir(argv0, path, sizeof(path));
     char cand[8192];
     snprintf(cand, sizeof(cand), "%s/../vendor/pith/runtime/libruntime.a",
              path);
@@ -266,13 +282,26 @@ int main(int argc, char **argv)
 {
     int argbase = 1;
     const char *verb = "build";
+    const char *initial_spec = NULL;
     if (argc >= 2 && argv[1][0] != '-') {
-        verb = argv[1];
-        argbase = 2;
+        if (strcmp(argv[1], "build") == 0 ||
+            strcmp(argv[1], "decompile") == 0 ||
+            strcmp(argv[1], "help") == 0 ||
+            strcmp(argv[1], "--help") == 0 ||
+            strcmp(argv[1], "-h") == 0 ||
+            strcmp(argv[1], "version") == 0 ||
+            strcmp(argv[1], "--version") == 0) {
+            verb = argv[1];
+            argbase = 2;
+        } else {
+            verb = "build";
+            initial_spec = argv[1];
+            argbase = 2;
+        }
     }
 
     if (strcmp(verb, "build") == 0) {
-        const char *spec_path = NULL;
+        const char *spec_path = initial_spec;
         const char *out_dir = ".";
         const char *cli_engine = NULL;
         const char *cli_compiler = NULL;
@@ -281,8 +310,22 @@ int main(int argc, char **argv)
         for (int i = argbase; i < argc; i++) {
             if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
                 spec_path = argv[++i];
-            } else if (strcmp(argv[i], "--out-dir") == 0 && i + 1 < argc) {
-                out_dir = argv[++i];
+            } else if ((strcmp(argv[i], "--out-dir") == 0 || strcmp(argv[i], "--out") == 0) && i + 1 < argc) {
+                const char *val = argv[++i];
+                static char dir_buf[1024];
+                strncpy(dir_buf, val, sizeof(dir_buf) - 1);
+                dir_buf[sizeof(dir_buf) - 1] = '\0';
+                char *slash = strrchr(dir_buf, '/');
+                if (slash && (strstr(slash, ".ninja") || strstr(slash, ".build") || strstr(slash, "Makefile"))) {
+                    if (slash == dir_buf) {
+                        out_dir = "/";
+                    } else {
+                        *slash = '\0';
+                        out_dir = dir_buf;
+                    }
+                } else {
+                    out_dir = val;
+                }
             } else if (strcmp(argv[i], "--engine") == 0 && i + 1 < argc) {
                 cli_engine = argv[++i];
             } else if (strcmp(argv[i], "--ninja") == 0) {

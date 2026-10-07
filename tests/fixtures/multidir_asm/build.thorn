@@ -1,0 +1,11 @@
+engine.project("multidir_asm")
+engine.backend("both")
+
+engine.add_target("app", engine.exe)
+engine.add_source("app", "src/main.c")
+engine.add_source("app", "src/arch/bootstub.S")
+engine.add_source("app", "src/submod/worker.c")
+engine.add_include("app", "include")
+engine.add_cflag("app", "-O2")
+engine.add_cflag("app", "-Wall")
+engine.add_asflag("app", "-Wa,--noexecstack")

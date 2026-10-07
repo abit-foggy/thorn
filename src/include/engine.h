@@ -16,6 +16,13 @@ enum {
     THORN_SHARED_LIB = 3
 };
 
+/* Source kinds */
+typedef enum SourceKind {
+    SRC_C = 0,
+    SRC_ASM_RAW,
+    SRC_ASM_CPP
+} SourceKind;
+
 /* String list */
 typedef struct StrList {
     char **items;
@@ -27,7 +34,9 @@ typedef struct Target {
     char name[256];
     int type;
     StrList sources;
+    SourceKind *source_kinds;
     StrList cflags;
+    StrList asflags;
     StrList ldflags;
     StrList includes;
     StrList order_deps;
@@ -57,6 +66,8 @@ Target *graph_add(Graph *g, const char *name, int type);
 int graph_add_command(Graph *g, const char *out, const char *cmd,
                       const char *in);
 
+int thorn_add_asflag(Target *t, const char *flag);
+
 int strlist_push(StrList *l, const char *s);
 int strlist_push_force(StrList *l, const char *s);
 void strlist_free(StrList *l);
@@ -84,10 +95,14 @@ int host_register(PithContext *ctx);
 /* Reverse decompilation */
 int decompile_file(const char *path, Graph *g, char ***notes,
                    size_t *nnotes);
+int decompile_file_scoped(const char *path, const char *dir_scope,
+                          Graph *g, char ***notes, size_t *nnotes);
 
 /* Hookable decompiler API (usable from C and standalone Pith scripts) */
 struct PithValue;
 typedef struct PithValue PithValue;
+
+int add_asflag(PithValue *target, PithValue *flag);
 
 void reset(void);
 void set_project(PithValue *name);
@@ -102,6 +117,7 @@ void inject_include(PithValue *target_pattern, PithValue *inc);
 void remap_target(PithValue *old_name, PithValue *new_name);
 void add_command_edge(PithValue *out, PithValue *cmd, PithValue *in);
 int parse_file(PithValue *path);
+int parse_scoped(PithValue *path, PithValue *dir_scope);
 int parse_string(PithValue *content);
 long target_count(void);
 long command_count(void);
@@ -139,6 +155,7 @@ int convert(PithValue *in_path, PithValue *out_path, PithValue *format);
 #define decompile_remap_target remap_target
 #define decompile_add_command_edge add_command_edge
 #define decompile_parse parse_file
+#define decompile_parse_scoped parse_scoped
 #define decompile_parse_string parse_string
 #define decompile_target_count target_count
 #define decompile_command_count command_count

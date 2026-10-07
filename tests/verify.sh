@@ -27,7 +27,7 @@ elif [ -d "$ROOT/../pith" ]; then
 else
     PITH_ROOT=""
 fi
-SCRATCH=$(mktemp -d /tmp/opencode/thorn-verify.XXXXXX)
+SCRATCH=$(mktemp -d /tmp/thorn-verify.XXXXXX)
 
 PASS=0
 FAIL=0
@@ -480,6 +480,91 @@ if (cd "$HOOK_DIR" && make > /dev/null 2>&1 && ./demo); then
 else
     bad "failed to build or run binary from pith-generated makefile"
 fi
+
+# ------------------------------------------------------------------
+# Feature: Native Assembly (.s / .S) and Scoped Multi-Directory
+# ------------------------------------------------------------------
+step "feature: native assembly and scoped multi-directory build"
+
+ASM_DIR="$SCRATCH/asm_test"
+mkdir -p "$ASM_DIR"
+cp -r "$ROOT/tests/fixtures/multidir_asm/"* "$ASM_DIR/"
+cd "$ASM_DIR"
+
+"$ROOT/out/thorn" >/dev/null 2>&1
+[ -f build.ninja ] && [ -f Makefile ] \
+    && ok "multidir_asm backends emitted in project directory"
+
+# samu build & run
+samu >/dev/null 2>&1
+[ -x app ] && ok "samu builds multidir_asm project including .S"
+asm_out_samu=$(./app)
+[ "$asm_out_samu" = "boot: 42, work: 100" ] \
+    && ok "multidir_asm samu binary output matches expected"
+
+# verify depfile rebuild on common.h change
+sleep 1
+cat << 'EOF' > include/common.h
+#ifndef COMMON_H
+#define COMMON_H
+
+#define MAGIC_NUM 99
+
+#ifndef __ASSEMBLER__
+int boot_code(void);
+int work_val(void);
+#endif
+
+#endif
+EOF
+
+samu >/dev/null 2>&1
+asm_out_rebuild=$(./app)
+[ "$asm_out_rebuild" = "boot: 99, work: 100" ] \
+    && ok "editing common.h triggers samu rebuild of bootstub.o via depfile"
+
+# make build & run
+make clean >/dev/null 2>&1
+make >/dev/null 2>&1
+[ -x app ] && ok "make builds multidir_asm project including .S"
+asm_out_make=$(./app)
+[ "$asm_out_make" = "boot: 99, work: 100" ] \
+    && ok "multidir_asm make binary output matches expected"
+
+# reverse decompile captures assembly and flags
+"$ROOT/out/thorn" decompile build.ninja -o decomp.thorn >/dev/null 2>&1
+grep -q 'add_source("app", "src/arch/bootstub.S")' decomp.thorn \
+    && ok "decompile captures assembly source .S"
+grep -q 'add_asflag("app", "-Wa,--noexecstack")' decomp.thorn \
+    && ok "decompile captures asflag"
+
+# scoped decompile test via standalone pith
+SCOPED_DIR="$SCRATCH/scoped_test"
+mkdir -p "$SCOPED_DIR/drivers/net"
+cat << 'EOF' > "$SCOPED_DIR/drivers/net/Makefile"
+CC = cc
+net_drv.a: eth.o phy.o
+	$(AR) rcs $@ eth.o phy.o
+eth.o: eth.c
+	$(CC) -Iinclude -c eth.c -o eth.o
+phy.o: phy.c
+	$(CC) -Iinclude -c phy.c -o phy.o
+EOF
+
+cat << EOF > "$SCOPED_DIR/run_scoped.pi"
+import "$ROOT/src/decompile.c"
+
+decompile.reset()
+decompile.set_project("scoped_proj")
+decompile.parse_scoped("$SCOPED_DIR/drivers/net/Makefile", "drivers/net")
+decompile.emit_thorn_file("$SCOPED_DIR/scoped.thorn")
+EOF
+
+(cd "$SCOPED_DIR" && "$ROOT/vendor/pith/pith" run "run_scoped.pi" > /dev/null 2>&1)
+grep -q 'add_source("net_drv", "drivers/net/eth.c")' "$SCOPED_DIR/scoped.thorn" \
+    && ok "parse_scoped prefixes relative source path with scope directory"
+grep -q 'add_include("net_drv", "drivers/net/include")' "$SCOPED_DIR/scoped.thorn" \
+    && ok "parse_scoped prefixes local include path with scope directory"
 
 # ------------------------------------------------------------------
 printf '\n'
