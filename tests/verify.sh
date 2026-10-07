@@ -49,7 +49,7 @@ if [ -x "$ROOT/out/thorn" ]; then
 else
     bad "out/thorn missing"; exit 1
 fi
-"$ROOT/out/thorn" version | grep -q "thorn 0.3.0" && ok "thorn version reports 0.3.0"
+"$ROOT/out/thorn" version | grep -q "thorn 1.0" && ok "thorn version reports 1.0"
 
 # ------------------------------------------------------------------
 step "stage 2: thorn self-hosts through its own generated backend"
@@ -58,7 +58,7 @@ cd "$ROOT"
 [ -f out/artifacts/build.ninja ] && ok "ninja backend generated into out/artifacts"
 samu -f out/artifacts/build.ninja >/dev/null 2>&1
 [ -x out/artifacts/thorn ] && ok "samu rebuilt thorn from its own ninja"
-./out/artifacts/thorn version | grep -q "thorn 0.3.0" \
+./out/artifacts/thorn version | grep -q "thorn 1.0" \
     && ok "stage 2 thorn runs (embeds pith, reads specs at runtime)"
 
 # determinism: a second run emits identical bytes

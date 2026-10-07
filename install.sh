@@ -2,18 +2,19 @@
 # install.sh - Installer for thorn
 #
 # Usage:
-#   # Change TAG=stable to TAG=nightly for the nightly build
-#   curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=stable bash
+#   # Change TAG=v1.0 to TAG=nightly for the nightly build
+#   curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v1.0 bash
 #
 # Overrides:
-#   TAG=nightly          Install nightly build instead of stable (default: stable)
+#   TAG=nightly          Install nightly build instead of stable (default: v1.0)
 #   PREFIX=/usr/local    Custom install prefix (binary installed to $PREFIX/bin/thorn)
 #   REPO=owner/thorn     Custom GitHub repository (default: abit-foggy/thorn)
 #
 set -eu
 
 REPO="${REPO:-abit-foggy/thorn}"
-TAG="${TAG:-stable}"
+TAG="${TAG:-v1.0}"
+[ "$TAG" = "stable" ] && TAG="v1.0"
 PREFIX="${PREFIX:-}"
 
 say() { printf 'install.sh: %s\n' "$*"; }

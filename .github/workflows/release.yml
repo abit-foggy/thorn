@@ -1,9 +1,15 @@
-name: Stable Release
+name: Release
 
 on:
   push:
-    branches: [ stable ]
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release version tag (e.g. v1.0)'
+        required: false
+        default: 'v1.0'
 
 permissions:
   contents: write
@@ -46,7 +52,7 @@ jobs:
       - name: Run Verification Suite
         run: ./tests/verify.sh
 
-      - name: Package Stable Artifacts
+      - name: Package Release Artifacts
         run: |
           mkdir -p dist
           install -m 0755 out/thorn dist/thorn
@@ -62,14 +68,14 @@ jobs:
           tar -czf "dist/thorn-x86_64-linux.tar.gz" -C "$STAGE" .
           rm -rf "$STAGE"
 
-      - name: Upload Stable Artifacts
+      - name: Upload Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-stable
+          name: artifacts-release
           path: dist/*
 
   release:
-    name: publish stable release
+    name: publish release
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -88,17 +94,30 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Prune Non-stable Release Assets
+      - name: Determine Release Tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=v1.0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prune Non-release Assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for asset in $(gh release view stable --json assets --jq '.assets[].name' 2>/dev/null || true); do
+          TAG="${{ steps.release_tag.outputs.tag }}"
+          for asset in $(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true); do
             case "$asset" in
               thorn|*.tar.gz|SHA256SUMS.txt) ;;
               *)
                 echo "Removing obsolete release asset: $asset"
-                gh release delete-asset stable "$asset" -y || true
+                gh release delete-asset "$TAG" "$asset" -y || true
                 ;;
             esac
           done
@@ -107,18 +126,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: stable
-          name: "Thorn Stable Release"
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: "Thorn ${{ steps.release_tag.outputs.tag }}"
           prerelease: false
           draft: false
           make_latest: true
           body: |
-            Official rolling stable release for Thorn.
+            Official release ${{ steps.release_tag.outputs.tag }} for Thorn.
 
             ### Quick Install
             ```bash
-            # Change TAG=stable to TAG=nightly for the nightly build
-            curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=stable bash
+            # Change TAG=${{ steps.release_tag.outputs.tag }} to TAG=nightly for the nightly build
+            curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=${{ steps.release_tag.outputs.tag }} bash
             ```
 
             ### Verification

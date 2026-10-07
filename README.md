@@ -9,8 +9,8 @@ A lean meta-build generator that embeds The Pith Programming Language. Minimal, 
 ## Installation
 
 ```bash
-# Change TAG=stable to TAG=nightly for the nightly build
-curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=stable bash
+# Change TAG=v1.0 to TAG=nightly for the nightly build
+curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v1.0 bash
 ```
 
 ## Links
