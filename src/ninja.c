@@ -112,8 +112,11 @@ int emit_ninja(const Graph *g, const char *cc, const char *ar,
                                                         : "cc";
             obj_name(t, src, obj, sizeof(obj));
             fprintf(f, "build %s%s: %s %s", pfx, obj, rule_name, src);
-            for (size_t d = 0; d < t->order_deps.count; d++)
-                fprintf(f, " || %s", t->order_deps.items[d]);
+            if (t->order_deps.count > 0) {
+                fprintf(f, " ||");
+                for (size_t d = 0; d < t->order_deps.count; d++)
+                    fprintf(f, " %s", t->order_deps.items[d]);
+            }
             fprintf(f, "\n");
             if (sk == SRC_ASM_RAW) {
                 if (atext.len > 0)
@@ -142,8 +145,11 @@ int emit_ninja(const Graph *g, const char *cc, const char *ar,
                 fprintf(f, " %s", src);
             }
         }
-        for (size_t d = 0; d < t->order_deps.count; d++)
-            fprintf(f, " | %s", t->order_deps.items[d]);
+        if (t->order_deps.count > 0) {
+            fprintf(f, " |");
+            for (size_t d = 0; d < t->order_deps.count; d++)
+                fprintf(f, " %s", t->order_deps.items[d]);
+        }
         fprintf(f, "\n");
 
         if (t->type != THORN_STATIC_LIB && t->ldflags.count > 0) {
