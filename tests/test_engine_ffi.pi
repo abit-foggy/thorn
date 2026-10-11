@@ -1,0 +1,38 @@
+# test_engine_ffi.pi - drives the build graph through an engine.c import.
+#
+# Proves the C-FFI surface: `import "src/engine.c"` exposes engine.*,
+# the graph accepts targets, sources and custom commands in-process,
+# and engine.emit_to() writes the backend to a chosen directory.
+#
+# Run from the repository root:
+#     vendor/pith/pith tests/test_engine_ffi.pi
+import "src/engine.c"
+
+engine.reset()
+engine.project("ffi_test")
+engine.backend("ninja")
+engine.add_target("app", 1)  # 1 = engine.exe
+engine.add_source("app", "tests/fixtures/ffi/main.c")
+engine.add_command("out/test.o", "echo building", "src/test.c")
+
+if engine.emit_to("out/ffi") == 0
+    print "FAIL: emit_to reported an error"
+    proc.exit(1)
+end
+
+if fs.exists("out/ffi/build.ninja") == 0
+    print "FAIL: out/ffi/build.ninja missing"
+    proc.exit(1)
+end
+
+spec = fs.readFile("out/ffi/build.ninja")
+if str.contains(spec, "rule cc") == 0
+    print "FAIL: rule cc missing from the emitted backend"
+    proc.exit(1)
+end
+if str.contains(spec, "cmd_1") == 0
+    print "FAIL: custom command edge missing from the emitted backend"
+    proc.exit(1)
+end
+
+print "test_engine_ffi: ok"
