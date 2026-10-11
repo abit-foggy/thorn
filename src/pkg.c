@@ -23,7 +23,7 @@
 #include "include/engine.h"
 #include "include/pkg.h"
 
-#define PKG_SCOPE ".thorn/pkgs"
+
 #define PKG_MAX_NAME 256
 
 static int

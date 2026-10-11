@@ -8,6 +8,9 @@
 #ifndef THORN_PKG_H
 #define THORN_PKG_H
 
+/* The local .tpkg package scope. */
+#define PKG_SCOPE ".thorn/pkgs"
+
 int thorn_pkg_main(int argc, char **argv);
 
 #endif /* THORN_PKG_H */
