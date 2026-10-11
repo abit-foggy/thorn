@@ -41,7 +41,6 @@ plugin's namespace (e.g. `rust.*`) is available inside `build.thorn`.
 
 - **Documentation**: [https://abit-foggy.github.io/thorn/](https://abit-foggy.github.io/thorn/)
 - **Repository**: [https://github.com/abit-foggy/thorn](https://github.com/abit-foggy/thorn)
-- **Extension (thornk)**: [https://github.com/abit-foggy/thornk](https://github.com/abit-foggy/thornk)
 - **Issue Tracker**: [https://github.com/abit-foggy/thorn/issues](https://github.com/abit-foggy/thorn/issues)
 
 ## Authorship
