@@ -28,6 +28,7 @@ extern int c_engine_add_command(PithValue *output, PithValue *command,
                                 PithValue *input);
 extern int c_engine_pkg_config(PithValue *target, PithValue *pkg);
 extern int c_engine_emit(void);
+extern int c_engine_emit_to(PithValue *path);
 
 /* Register engine.* host namespace */
 int host_register(PithContext *ctx)
@@ -52,6 +53,7 @@ int host_register(PithContext *ctx)
         { "add_command",   c_engine_add_command,   "ppp" },
         { "pkg_config",    c_engine_pkg_config,    "pp"  },
         { "emit",          c_engine_emit,          ""    },
+        { "emit_to",       c_engine_emit_to,       "p"   },
     };
     for (size_t i = 0; i < sizeof(api) / sizeof(api[0]); i++)
         if (pith_register_ns_fn(ctx, "engine", api[i].name,

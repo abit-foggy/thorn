@@ -12,6 +12,9 @@
 #include "include/emit.h"
 
 #ifndef THORN_CORE_BUILD
+/* The combined import TU keeps decompile's reset; engine.c skips its
+   own (see THORN_ENGINE_COMBINED there). */
+#define THORN_ENGINE_COMBINED
 #include "engine.c"
 #endif
 

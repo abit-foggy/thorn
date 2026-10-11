@@ -29,7 +29,9 @@ RENAME_DEFS = \
 	-Dadd_order_dep=c_engine_add_order_dep \
 	-Dadd_command=c_engine_add_command \
 	-Dpkg_config=c_engine_pkg_config \
-	-Demit=c_engine_emit
+	-Demit=c_engine_emit \
+	-Dreset=c_engine_reset \
+	-Demit_to=c_engine_emit_to
 
 CFLAGS = -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
 	-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE

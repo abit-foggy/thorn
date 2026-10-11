@@ -64,6 +64,19 @@ static const char *find_contradicting_cflag(const StrList *list, const char *fla
     return NULL;
 }
 
+/* Skipped when decompile.c pulls this unit into one TU: that import
+   surface owns the reset name (decompile.reset). */
+#ifndef THORN_ENGINE_COMBINED
+void reset(void)
+{
+    if (g_ready)
+        graph_free(&g_graph);
+    g_ready = 0;
+    g_errors = 0;
+    ensure_graph();
+}
+#endif
+
 int project(PithValue *name)
 {
     ensure_graph();
@@ -410,18 +423,39 @@ int pkg_config(PithValue *target, PithValue *pkg)
     return 1;
 }
 
+static int emit_dir(const char *dir);
+
 int emit(void)
 {
     ensure_graph();
+    const char *dir = getenv("THORN_OUT_DIR");
+    if (!dir || !*dir)
+        dir = ".";
+    return emit_dir(dir);
+}
+
+int emit_to(PithValue *path)
+{
+    ensure_graph();
+    if (!path) {
+        diag("emit_to() expects an output directory string");
+        return 0;
+    }
+    const char *d = pithStringData(path);
+    if (!d[0] || has_whitespace(d)) {
+        diag("emit_to(): output directory `%s` is empty or contains whitespace", d);
+        return 0;
+    }
+    return emit_dir(d);
+}
+
+static int emit_dir(const char *dir)
+{
     if (g_errors > 0)
         return 0;
 
     if (!g_graph.proj[0])
         snprintf(g_graph.proj, sizeof(g_graph.proj), "project");
-
-    const char *dir = getenv("THORN_OUT_DIR");
-    if (!dir || !*dir)
-        dir = ".";
 
     /* Determine backend: CLI env THORN_ENGINE overrides spec */
     const char *sel = getenv("THORN_ENGINE");
