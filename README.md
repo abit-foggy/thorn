@@ -1,6 +1,6 @@
 # thorn
 
-A C and supersets meta-generator for Ninja and POSIX Make; written in C99
+A C and subsets meta-generator for Ninja and POSIX Make; written in C99
 
 [![CI](https://github.com/abit-foggy/thorn/actions/workflows/ci.yml/badge.svg)](https://github.com/abit-foggy/thorn/actions)
 [![Documentation](https://img.shields.io/badge/docs-mdBook-emerald.svg)](https://abit-foggy.github.io/thorn/)
