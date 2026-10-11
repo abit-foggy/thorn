@@ -2,19 +2,19 @@
 # install.sh - Installer for thorn
 #
 # Usage:
-#   # Change TAG=v1.0 to TAG=nightly for the nightly build
-#   curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v1.0 bash
+#   # Change TAG=v0.2.0 to TAG=nightly for the nightly build
+#   curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v0.2.0 bash
 #
 # Overrides:
-#   TAG=nightly          Install nightly build instead of stable (default: v1.0)
+#   TAG=nightly          Install nightly build instead of stable (default: v0.2.0)
 #   PREFIX=/usr/local    Custom install prefix (binary installed to $PREFIX/bin/thorn)
 #   REPO=owner/thorn     Custom GitHub repository (default: abit-foggy/thorn)
 #
 set -eu
 
 REPO="${REPO:-abit-foggy/thorn}"
-TAG="${TAG:-v1.0}"
-[ "$TAG" = "stable" ] && TAG="v1.0"
+TAG="${TAG:-v0.2.0}"
+[ "$TAG" = "stable" ] && TAG="v0.2.0"
 PREFIX="${PREFIX:-}"
 
 say() { printf 'install.sh: %s\n' "$*"; }
@@ -73,8 +73,8 @@ trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 say "downloading thorn ($TAG) from https://github.com/$REPO"
 BIN_URL="https://github.com/$REPO/releases/download/$TAG/thorn"
-TAR_URL="https://github.com/$REPO/releases/download/$TAG/thorn-x86_64-linux.tar.gz"
-TAR_NIGHTLY_URL="https://github.com/$REPO/releases/download/$TAG/thorn-x86_64-linux-nightly.tar.gz"
+TAR_URL="https://github.com/$REPO/releases/download/$TAG/x86_64-linux.tar.gz"
+TAR_NIGHTLY_URL="https://github.com/$REPO/releases/download/$TAG/x86_64-linux-nightly.tar.gz"
 
 downloaded=0
 if fetch "$BIN_URL" "$TMP_BIN" 2>/dev/null; then

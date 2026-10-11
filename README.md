@@ -9,8 +9,8 @@ A C and supersets meta-generator for Ninja and POSIX Make; written in C99
 ## Installation
 
 ```bash
-# Change TAG=v1.0 to TAG=nightly for the nightly build
-curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v1.0 bash
+# Change TAG=v0.2.0 to TAG=nightly for the nightly build
+curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | TAG=v0.2.0 bash
 ```
 
 ## Extensions

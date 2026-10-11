@@ -7,7 +7,7 @@
 struct PithContext;
 typedef struct PithContext PithContext;
 
-#define THORN_VERSION "1.0"
+#define THORN_VERSION "0.2.0"
 
 /* Target types */
 enum {
