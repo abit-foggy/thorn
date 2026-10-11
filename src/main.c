@@ -11,6 +11,7 @@
 #include <compiler.h>
 
 #include <sys/stat.h>
+#include <dirent.h>
 
 #include "include/engine.h"
 #include "include/pkg.h"
@@ -323,6 +324,32 @@ plugin_resolve_obj(const char *name, const char *depval, char *out,
                    size_t n, int *found)
 {
     *found = 0;
+    /* a remote source resolves against the installed scope: any
+       version of <name>@* carrying a plugin.o */
+    if (thorn_pkg_source_is_remote(depval)) {
+        char dir[1024];
+        int w = snprintf(dir, sizeof(dir), "%s/%s@", PKG_SCOPE, name);
+        if (w > 0 && (size_t)w < sizeof(dir)) {
+            DIR *d = opendir(PKG_SCOPE);
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d)) != NULL) {
+                    if (strncmp(e->d_name, dir + strlen(PKG_SCOPE) + 1,
+                                strlen(name) + 1) != 0)
+                        continue;
+                    int w2 = snprintf(out, n, "%s/%s/plugin.o",
+                                      PKG_SCOPE, e->d_name);
+                    if (w2 > 0 && (size_t)w2 < n &&
+                        access(out, R_OK) == 0) {
+                        *found = 1;
+                        break;
+                    }
+                }
+                closedir(d);
+            }
+        }
+        return;
+    }
     if (strchr(depval, '/') || strchr(depval, '\\')) {
         if (str_ends_with(depval, ".tpkg") || str_ends_with(depval, ".tar")) {
             char tmpdir[4096];
@@ -425,19 +452,26 @@ static void
 load_plugins(PithContext *ctx)
 {
     PithConfig cfg;
-    if (pith_config_load("pith.toml", &cfg) != 0) {
+    if (pith_config_load(thorn_pkg_config(), &cfg) != 0)
         return;   /* no manifest: zero overhead */
-    }
     for (size_t i = 0; i < cfg.count; i++) {
-        if (strncmp(cfg.entries[i].key, "deps.", 5) != 0)
+        const char *key = cfg.entries[i].key;
+        if (strncmp(key, "deps.", 5) != 0 &&
+            strncmp(key, "plugins.", 8) != 0)
             continue;
-        const char *name = cfg.entries[i].key + 5;
+        const char *nkey = strncmp(key, "plugins.", 8) == 0
+                               ? key + 8 : key + 5;
         char obj[4096], manifest[4096], obj2[4096];
         int found = 0;
-        plugin_resolve_obj(name, cfg.entries[i].value, obj, sizeof(obj),
-                           &found);
-        if (!found)
+        plugin_resolve_obj(nkey, cfg.entries[i].value, obj,
+                           sizeof(obj), &found);
+        if (!found) {
+            if (thorn_pkg_source_is_remote(cfg.entries[i].value))
+                diag("plugin `%s` is not installed yet; run: "
+                     "thorn pkg install %s", nkey,
+                     cfg.entries[i].value);
             continue;
+        }
         char *slash = strrchr(obj, '/');
         if (slash) *slash = '\0';
         int w1 = snprintf(manifest, sizeof(manifest), "%s/manifest", obj);
@@ -445,7 +479,7 @@ load_plugins(PithContext *ctx)
         if (w1 < 0 || (size_t)w1 >= sizeof(manifest) || w2 < 0 ||
             (size_t)w2 >= sizeof(obj2))
             continue;
-        plugin_load_one(ctx, name, obj2, manifest);
+        plugin_load_one(ctx, nkey, obj2, manifest);
     }
 }
 

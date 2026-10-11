@@ -16,6 +16,26 @@ curl -fsSL https://raw.githubusercontent.com/abit-foggy/thorn/main/install.sh | 
 ## Extensions
 
 - [**thornk**](https://github.com/abit-foggy/thornk) — An extension of Thorn that converts Linux Kbuild trees to Ninja and `thorn.build` specifications.
+- [**thorn-rs**](https://github.com/abit-foggy/thorn-rs) — Zero-cargo `#![no_std]` Rust static libraries, as a Thorn plugin.
+
+## Plugins
+
+Extensions ship as `.tpkg` bundles and load from a `thorn.toml` (or
+`pith.toml`) manifest:
+
+```toml
+[plugins]
+thorn-rs = "abit-foggy/thorn-rs"
+```
+
+```sh
+thorn pkg sync     # installs from the github release, or from source
+thorn              # plugins load; their namespaces work in build.thorn
+```
+
+`thorn pkg install <user/repo|git-url>` prefers a `.tpkg` release asset
+and falls back to cloning and building the source. The installed
+plugin's namespace (e.g. `rust.*`) is available inside `build.thorn`.
 
 ## Links
 
