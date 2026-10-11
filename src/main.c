@@ -256,11 +256,12 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
         pith_register_link_object(ctx, cand);
         return;
     }
-    /* Fallback default relative or hardcoded path */
-    snprintf(cand, sizeof(cand), "/home/foggy/thorn/out/artifacts/engine.o");
-    pith_register_link_object(ctx, cand);
+    if (getenv("THORN_LINK_OBJ") || access(path, F_OK) == 0)
+        return;
+    diag("no engine link object found beside the binary; "
+         "temp-executable fallbacks will not resolve engine.* "
+         "(set THORN_LINK_OBJ)");
 }
-
 /* ------------------------------------------------------------------ */
 /* Plugin hosting                                                      */
 /* ------------------------------------------------------------------ */

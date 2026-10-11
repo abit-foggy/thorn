@@ -319,9 +319,29 @@ install_from_source(const char *name, const char *url, const char *vc)
 static int
 tpkg_install_remote(const char *name, const char *src)
 {
+    /* a direct .tpkg url: download and unpack */
+    if (ends_with(src, ".tpkg")) {
+        char tmp[4096];
+        if (pith_make_temp(".tpkg", tmp, sizeof(tmp)) != 0)
+            return 1;
+        if (http_get(src, tmp) != 0) {
+            diag("pkg: cannot download '%s'", src);
+            unlink(tmp);
+            return 1;
+        }
+        char vc[PKG_MAX_NAME];
+        mangled_ver(src, vc, sizeof(vc));
+        char dest[4096];
+        snprintf(dest, sizeof(dest), "%s/%s@%s", PKG_SCOPE, name, vc);
+        int rc = unpack_into(tmp, dest);
+        unlink(tmp);
+        if (rc == 0)
+            diag("pkg: installed %s from the url", name);
+        return rc;
+    }
+
     char user[128], repo[192];
     if (gh_split(src, user, sizeof(user), repo, sizeof(repo)) == 0) {
-        (void)0;
         char asset[1024], tag[128];
         int pr = gh_release_probe(user, repo, asset, sizeof(asset),
                                   tag, sizeof(tag));
@@ -356,7 +376,7 @@ tpkg_install_remote(const char *name, const char *src)
         return install_from_source(name, url, "src");
     }
 
-    /* a plain git url: source only */
+    /* any other git url: clone and build from source */
     return install_from_source(name, src, "src");
 }
 
@@ -497,15 +517,22 @@ thorn_pkg_main(int argc, char **argv)
         if (argc >= 3)
             return tpkg_install_one(argv[1], argv[2]);
         if (argc == 2) {
-            /* a remote shorthand installs directly (name from the
-               repo); otherwise look the name up in the manifest */
+            /* a remote source installs directly: the plugin name is
+               the repo (or the bundle file) name; otherwise look the
+               name up in the manifest */
             if (thorn_pkg_source_is_remote(argv[1])) {
                 char rname[PKG_MAX_NAME], user[128], repo[192];
-                if (gh_split(argv[1], user, sizeof(user), repo,
-                             sizeof(repo)) != 0)
-                    snprintf(rname, sizeof(rname), "%s", argv[1]);
-                else
+                if (ends_with(argv[1], ".tpkg")) {
+                    const char *b = strrchr(argv[1], '/');
+                    b = b ? b + 1 : argv[1];
+                    snprintf(rname, sizeof(rname), "%.*s",
+                             (int)(strlen(b) - 5), b);
+                } else if (gh_split(argv[1], user, sizeof(user), repo,
+                                    sizeof(repo)) == 0) {
                     snprintf(rname, sizeof(rname), "%s", repo);
+                } else {
+                    snprintf(rname, sizeof(rname), "%s", argv[1]);
+                }
                 return tpkg_install_one(rname, argv[1]);
             }
             PithConfig cfg;
