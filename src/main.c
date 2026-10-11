@@ -8,6 +8,10 @@
 
 #include <pith.h>
 #include <pith_embed.h>
+#include <compiler.h>
+#include <libtcc.h>
+
+#include <sys/stat.h>
 
 #include "include/engine.h"
 #include "include/pkg.h"
@@ -257,6 +261,158 @@ static void register_link_obj(PithContext *ctx, const char *argv0)
     pith_register_link_object(ctx, cand);
 }
 
+/* ------------------------------------------------------------------ */
+/* Plugin hosting                                                      */
+/* ------------------------------------------------------------------ */
+
+static int
+str_ends_with(const char *s, const char *suffix)
+{
+    size_t ls = strlen(s), lx = strlen(suffix);
+    return ls >= lx && strcmp(s + ls - lx, suffix) == 0;
+}
+
+static char *
+read_bin(const char *path, long *out_sz)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp)
+        return NULL;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz < 0) {
+        fclose(fp);
+        return NULL;
+    }
+    char *mem = malloc((size_t)sz + 1);
+    if (!mem || fread(mem, 1, (size_t)sz, fp) != (size_t)sz) {
+        free(mem);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+    *out_sz = sz;
+    return mem;
+}
+
+/* Relocated plugin states stay mapped for the process lifetime: the
+   namespace functions the spec calls live in that memory. */
+static TCCState *g_plugin_states[16];
+static size_t g_plugin_states_n;
+
+static int
+plugin_load_one(PithContext *ctx, const char *obj)
+{
+    TCCState *cs = tcc_new();
+    if (!cs)
+        return -1;
+    tcc_set_output_type(cs, TCC_OUTPUT_MEMORY);
+
+    /* pith runtime and engine symbols the plugin calls */
+    tcc_add_symbol(cs, "pith_register_ns_fn",
+                   (const void *)pith_register_ns_fn);
+    tcc_add_symbol(cs, "pithNewString", (const void *)pithNewString);
+    tcc_add_symbol(cs, "pithStringData", (const void *)pithStringData);
+    tcc_add_symbol(cs, "pithRetain", (const void *)pithRetain);
+    tcc_add_symbol(cs, "pithRelease", (const void *)pithRelease);
+    tcc_add_symbol(cs, "c_engine_project", (const void *)c_engine_project);
+    tcc_add_symbol(cs, "c_engine_backend", (const void *)c_engine_backend);
+    tcc_add_symbol(cs, "c_engine_add_target",
+                   (const void *)c_engine_add_target);
+    tcc_add_symbol(cs, "c_engine_add_source",
+                   (const void *)c_engine_add_source);
+    tcc_add_symbol(cs, "c_engine_add_order_dep",
+                   (const void *)c_engine_add_order_dep);
+    tcc_add_symbol(cs, "c_engine_add_command",
+                   (const void *)c_engine_add_command);
+    tcc_add_symbol(cs, "c_engine_emit", (const void *)c_engine_emit);
+
+    if (tcc_add_file(cs, obj) != 0 || tcc_relocate(cs) != 0) {
+        diag("plugin `%s` failed to load", obj);
+        tcc_delete(cs);
+        return -1;
+    }
+    void *init = tcc_get_symbol(cs, "thorn_plugin_init");
+    if (!init) {
+        diag("plugin `%s` exports no thorn_plugin_init", obj);
+        tcc_delete(cs);
+        return -1;
+    }
+    ((void (*)(PithContext *))init)(ctx);
+
+    if (g_plugin_states_n < sizeof(g_plugin_states) / sizeof(*g_plugin_states))
+        g_plugin_states[g_plugin_states_n++] = cs;
+    pith_register_link_object(ctx, obj);
+    return 0;
+}
+
+/* Resolve a declared dependency to its plugin object: a local path
+   (directory, .tpkg or .tar) or the installed .thorn/pkgs scope.
+   Dependencies without a plugin.o are plain pith packages: skipped. */
+static void
+plugin_resolve_obj(const char *name, const char *depval, char *out,
+                   size_t n, int *found)
+{
+    *found = 0;
+    if (strchr(depval, '/') || strchr(depval, '\\')) {
+        if (str_ends_with(depval, ".tpkg") || str_ends_with(depval, ".tar")) {
+            char tmpdir[4096];
+            if (pith_make_temp("", tmpdir, sizeof(tmpdir)) != 0)
+                return;
+            rmdir(tmpdir);
+            if (mkdir(tmpdir, 0755) != 0)
+                return;
+            long sz = 0;
+            char *mem = read_bin(depval, &sz);
+            if (!mem)
+                return;
+            int rc = pith_tar_extract_mem(mem, (size_t)sz, tmpdir);
+            free(mem);
+            if (rc != 0)
+                return;
+            int w = snprintf(out, n, "%s/plugin.o", tmpdir);
+            *found = (w > 0 && (size_t)w < n && access(out, R_OK) == 0);
+            return;
+        }
+        if (strlen(depval) + 10 >= n)
+            return;
+        snprintf(out, n, "%s/plugin.o", depval);
+        *found = access(out, R_OK) == 0;
+        return;
+    }
+    char vc[256];
+    snprintf(vc, sizeof(vc), "%s", depval);
+    for (char *c = vc; *c; c++)
+        if (*c == '/' || *c == '\\')
+            *c = '_';
+    if (strlen(name) >= 128 || strlen(vc) >= 200 || strlen(name) + strlen(vc) + 16 >= n)
+        return;
+    int w = snprintf(out, n, "%s/%s@%s/plugin.o", ".thorn/pkgs", name, vc);
+    *found = (w > 0 && (size_t)w < n && access(out, R_OK) == 0);
+}
+
+static void
+load_plugins(PithContext *ctx)
+{
+    PithConfig cfg;
+    if (pith_config_load("pith.toml", &cfg) != 0)
+        return;   /* no manifest: zero overhead */
+    for (size_t i = 0; i < cfg.count; i++) {
+        if (strncmp(cfg.entries[i].key, "deps.", 5) != 0)
+            continue;
+        const char *name = cfg.entries[i].key + 5;
+        char obj[4096];
+        int found = 0;
+        plugin_resolve_obj(name, cfg.entries[i].value, obj, sizeof(obj),
+                           &found);
+        if (!found)
+            continue;
+        if (plugin_load_one(ctx, obj) == 0)
+            diag("plugin loaded: %s (%s)", name, obj);
+    }
+}
+
 #ifndef THORN_RUNTIME_DEFAULT
 #define THORN_RUNTIME_DEFAULT ""
 #endif
@@ -410,6 +566,7 @@ int main(int argc, char **argv)
         }
         configure_runtime_env(argc > 0 ? argv[0] : "thorn");
         register_link_obj(ctx, argc > 0 ? argv[0] : "thorn");
+        load_plugins(ctx);
 
         char *src = read_all(spec_path);
         if (!src) {

@@ -51,10 +51,10 @@ $(ART)/decompile.o: src/decompile.c src/include/engine.h pith-check
 	mkdir -p $(ART)
 	$(CC) $(CFLAGS) -DTHORN_CORE_BUILD -Isrc/include -I$(PITH_INC) -c src/decompile.c -o $@
 
-$(ART)/main.o: src/main.c src/include/engine.h pith-check
+$(ART)/main.o: src/main.c src/include/engine.h src/include/pkg.h pith-check
 	mkdir -p $(ART)
 	RT=$$(cd $(PITH_ROOT) && pwd)/runtime/libruntime.a; \
-	$(CC) $(CFLAGS) -Isrc/include -I$(PITH_INC) -DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -c src/main.c -o $@
+	$(CC) $(CFLAGS) -Isrc/include -I$(PITH_INC) -I$(PITH_ROOT)/vendor/tcc -DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -c src/main.c -o $@
 
 $(ART)/pkg.o: src/pkg.c src/include/pkg.h src/include/engine.h pith-check
 	mkdir -p $(ART)
