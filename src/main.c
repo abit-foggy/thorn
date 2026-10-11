@@ -10,6 +10,7 @@
 #include <pith_embed.h>
 
 #include "include/engine.h"
+#include "include/pkg.h"
 
 /* Engine host API symbols */
 extern int c_engine_project(PithValue *name);
@@ -104,6 +105,8 @@ static void usage(void)
            "    thorn build [-f spec] [--out-dir dir] [--engine ninja|make|both]\n"
            "                [--compiler cc] [--ar ar]\n"
            "    thorn decompile <build.ninja|Makefile> [-o out.thorn]\n"
+           "    thorn pkg [install [name <src>]] | [sync] | [add <bundle>]\n"
+           "                | [list]\n"
            "    thorn help | version\n\n"
            "The specification (build.thorn, or thorn.pith) is a pith "
            "script\nevaluated at runtime; the engine API is the "
@@ -116,6 +119,10 @@ static void usage(void)
            "    --compiler <clang|gcc|cc|tcc|...>\n"
            "    --ar <ar|llvm-ar|...>\n"
            "Precedence: flag > CC/AR env > cc/ar (validated in PATH).\n\n"
+           "Packages:\n"
+           "    .tpkg bundles (tar of plugin.o + manifest) install into\n"
+           "    .thorn/pkgs; declared pith.toml [deps] load as plugins\n"
+           "    before the spec evaluates.\n\n"
            "Engine selection:\n"
            "    engine.backend(\"ninja\") in spec, or --engine <ninja|make|both>\n"
            "(flag overrides spec).\n");
@@ -288,6 +295,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && argv[1][0] != '-') {
         if (strcmp(argv[1], "build") == 0 ||
             strcmp(argv[1], "decompile") == 0 ||
+            strcmp(argv[1], "pkg") == 0 ||
             strcmp(argv[1], "help") == 0 ||
             strcmp(argv[1], "--help") == 0 ||
             strcmp(argv[1], "-h") == 0 ||
@@ -459,6 +467,9 @@ int main(int argc, char **argv)
         }
         return cmd_decompile(in, out);
     }
+
+    if (strcmp(verb, "pkg") == 0)
+        return thorn_pkg_main(argc - 2, argv + 2);
 
     if (strcmp(verb, "help") == 0 || strcmp(verb, "--help") == 0 ||
         strcmp(verb, "-h") == 0) {

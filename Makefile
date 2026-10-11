@@ -56,12 +56,16 @@ $(ART)/main.o: src/main.c src/include/engine.h pith-check
 	RT=$$(cd $(PITH_ROOT) && pwd)/runtime/libruntime.a; \
 	$(CC) $(CFLAGS) -Isrc/include -I$(PITH_INC) -DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -c src/main.c -o $@
 
+$(ART)/pkg.o: src/pkg.c src/include/pkg.h src/include/engine.h pith-check
+	mkdir -p $(ART)
+	$(CC) $(CFLAGS) -Isrc/include -I$(PITH_INC) -c src/pkg.c -o $@
+
 $(OUT)/thorn: $(ART)/main.o $(ART)/engine.o \
-	$(ART)/decompile.o $(PITH_FRONT) $(PITH_LIBS)
+	$(ART)/decompile.o $(ART)/pkg.o $(PITH_FRONT) $(PITH_LIBS)
 	mkdir -p $(OUT)
 	RT=$$(cd $(PITH_ROOT) && pwd)/runtime/libruntime.a; \
 	$(CC) $(ART)/main.o $(ART)/engine.o \
-		$(ART)/decompile.o $(PITH_FRONT) $(PITH_LIBS) \
+		$(ART)/decompile.o $(ART)/pkg.o $(PITH_FRONT) $(PITH_LIBS) \
 		-DTHORN_RUNTIME_DEFAULT="\"$$RT\"" -o $@
 
 # Stage 2 self-hosting
